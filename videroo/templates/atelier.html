@@ -130,7 +130,8 @@ génération à la fois, et jamais de relance toute seule — « regénérer » 
     que tu déposes dans CapCut. <strong id="compte-videos">{{ fil.videos_pretes }}</strong>
     vidéo(s) disponible(s) sur {{ fil.scenes|length }} scène(s).</p>
     <div class="rangee" style="margin-top:10px">
-      <a class="bouton" href="/projets/{{ p.id }}/telecharger/videos">Télécharger toutes les vidéos (.zip)</a>
+      <button type="button" onclick="telechargerUneParUne(this)">Télécharger toutes les vidéos</button>
+      <span class="mono">une par une, dans tes Téléchargements (Chrome peut te demander d'autoriser plusieurs téléchargements : accepte une fois)</span>
     </div>
     <div class="sep"></div>
     <div class="grille-liens" id="liens-videos"></div>
@@ -309,7 +310,7 @@ function peindreTuyau(fil) {
     + '</div>'
     + '<div class="rangee" style="margin-top:12px">'
     + (videosFaites
-        ? '<a class="bouton" href="/projets/' + PROJET + '/telecharger/videos">Télécharger les vidéos (.zip)</a>'
+        ? '<button type="button" onclick="telechargerUneParUne(this)">Télécharger toutes les vidéos</button>'
         : '<span class="mono">Rien à télécharger pour l\'instant.</span>')
     + (mini && mini.telechargement
         ? ' <a class="bouton doux" href="' + mini.telechargement + '">Télécharger la miniature</a>'
@@ -489,6 +490,30 @@ async function agir(charge) {
   const bilan = await reponse.json();
   dire(bilan.message, bilan.ok);
   await rafraichir();
+}
+
+// Chaque vidéo part comme un téléchargement normal, l'une après l'autre : pas
+// d'archive à décompresser, les fichiers arrivent directement dans Téléchargements.
+async function telechargerUneParUne(bouton) {
+  const reponse = await fetch('/local/projets/' + PROJET + '/fil');
+  const fil = await reponse.json();
+  const liens = fil.scenes.filter(s => s.video.telechargement).map(s => s.video.telechargement);
+  if (!liens.length) { dire('Aucune vidéo à télécharger pour l\'instant.', false); return; }
+  bouton.disabled = true;
+  for (let i = 0; i < liens.length; i++) {
+    bouton.textContent = 'Téléchargement ' + (i + 1) + ' / ' + liens.length + '…';
+    const a = document.createElement('a');
+    a.href = liens[i];
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Un court écart : Chrome enchaîne mieux des téléchargements espacés.
+    await new Promise(r => setTimeout(r, 700));
+  }
+  bouton.disabled = false;
+  bouton.textContent = 'Télécharger toutes les vidéos';
+  dire(liens.length + ' vidéo(s) envoyée(s) vers tes Téléchargements.', true);
 }
 
 async function rafraichir() {

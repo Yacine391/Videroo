@@ -64,6 +64,37 @@ PAR_DEFAUT = {
     "note de montage": "ignorer",
 }
 CONNUES = set(PAR_DEFAUT)
+
+#: Le SENS d'une étiquette, quand son texte exact n'est pas connu. Le 16 novembre
+#  2026, le même format est revenu avec « Durée utile avant accélération »,
+#  « Repère brut » et « RACCORD ET MONTAGE » : trois mots changés, et toutes les
+#  durées manquaient — pendant que la note de montage partait chez Grok. On
+#  reconnaît donc les mots qui portent le sens, pas la phrase entière.
+SENS_PAR_MOTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("prompt", "image"), "prompt_image"),
+    (("prompt", "video"), "prompt_video"),
+    (("prompt", "grok"), "prompt_video"),
+    (("duree",), "duree"),
+    (("references",), "refs"),
+    (("reference",), "refs"),
+    (("inventaire",), "inventaire"),
+    (("ce", "qui", "change"), "ce_qui_change"),
+    (("repere",), "ignorer"),
+    (("raccord",), "ignorer"),
+    (("raccordement",), "ignorer"),
+    (("montage",), "ignorer"),
+)
+
+
+def sens(k: str, appris: dict[str, str]) -> str | None:
+    """Ce que désigne l'étiquette `k` : appris > connu > mots-clés > rien."""
+    if k in appris:
+        return appris[k]
+    mots = set(k.split())
+    for cles, champ in SENS_PAR_MOTS:
+        if set(cles) <= mots:
+            return champ
+    return None
 #: Mots d'en-tête de pack qui ne sont jamais des débuts de scène.
 PAS_DES_SCENES = {"partie", "episode", "saison", "version", "planche", "personnage", "r", "p"}
 
@@ -181,7 +212,7 @@ def _est_fermante(k: str, appris: dict[str, str]) -> bool:
     « NOTE DE MONTAGE — NE PAS LIRE À VOIX HAUTE » est à ignorer, mais elle
     marque bien la fin du prompt vidéo : sans ça, la note partait chez Grok.
     """
-    return k in CONNUES or k in appris
+    return k in CONNUES or sens(k, appris) is not None
 
 
 def _bloc(lignes: list[str], i: int, droite: str, appris: dict[str, str], long: bool) -> str:
@@ -267,6 +298,29 @@ def _debuts_de_scene(lignes: list[str]) -> dict[int, int]:
     return meilleur if len(meilleur) >= 2 else {}
 
 
+#: {numéro: durée} lus dans les titres « PLAN 01 — … (10 s) », toutes suites confondues.
+_durees_des_titres: dict[int, int] = {}
+RE_DUREE_DE_TITRE = re.compile(r"\((\d{1,2})\s*(?:s|sec|secondes?)\)", re.IGNORECASE)
+
+
+def _durees_dans_les_titres(lignes: list[str]) -> dict[int, int]:
+    """La durée écrite dans le titre d'un plan, même dans le résumé du pack.
+
+    « PLAN 01 — TU VOULAIS QUOI ? | 00:00–00:10 (10 s) » : le découpage
+    chronométré donne la durée, le plan détaillé plus bas ne la répète pas
+    toujours. Premier titre trouvé pour chaque numéro.
+    """
+    durees: dict[int, int] = {}
+    for ligne in lignes:
+        m = RE_DEBUT_SCENE.match(_propre(ligne))
+        if not m:
+            continue
+        d = RE_DUREE_DE_TITRE.search(m.group(3) or "")
+        if d:
+            durees.setdefault(int(m.group(2)), int(d.group(1)))
+    return durees
+
+
 RE_RUBRIQUE = re.compile(r"^\s*(?:\*\*|#+\s*)?[^\w\s«\"“(\-*•>]")
 
 
@@ -294,6 +348,8 @@ def _corps_des_scenes(
     debuts = _debuts_de_scene(lignes)
     corps: dict[int, list[str]] = {}
     titres: dict[int, str] = {}
+    _durees_des_titres.clear()
+    _durees_des_titres.update(_durees_dans_les_titres(lignes))
     ordre = sorted(debuts.items(), key=lambda kv: kv[1])
     for rang, (numero, i) in enumerate(ordre):
         fin = (
@@ -354,6 +410,9 @@ def completer(texte: str, res) -> None:
         if not lignes:
             continue
         remplis = _remplir(scene, lignes, appris)
+        if scene.get("duree") is None and scene["numero"] in _durees_des_titres:
+            scene["duree"] = _durees_des_titres[scene["numero"]]
+            remplis.add("duree")
         if "refs" in remplis:
             scene["refs_noms"] = parser_v6._decouper_refs(scene["refs_brut"])
             refs_remplies = True
@@ -396,7 +455,7 @@ def _remplir(scene: dict, lignes: list[str], appris: dict[str, str]) -> set[str]
         if not trouvee:
             continue
         k, _, droite = trouvee
-        champ = appris.get(k)
+        champ = sens(k, appris)
         if not champ or champ == "ignorer":
             continue
         if champ == "duree":
@@ -431,7 +490,7 @@ def _relever_inconnues(
         if not trouvee:
             continue
         k, ecrite, droite = trouvee
-        if k in CONNUES or k in appris or k in noms:
+        if k in CONNUES or sens(k, appris) is not None or k in noms:
             continue
         entree = inconnues.setdefault(
             k,

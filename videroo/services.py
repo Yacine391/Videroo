@@ -630,8 +630,13 @@ def problemes_scene(scene: dict, codes_connus: set[str]) -> list[str]:
         soucis.append("prompt image vide")
     if not (scene.get("prompt_video") or "").strip():
         soucis.append("prompt vidéo vide")
-    if scene.get("duree") not in config.DUREES_GROK:
-        soucis.append(f"duree {scene.get('duree')} non prise en charge par Grok")
+    if scene.get("duree") is None:
+        soucis.append(
+            "durée introuvable dans le pack (onglet Histoire : dis à l'application "
+            "quelle étiquette donne la durée)"
+        )
+    elif scene.get("duree") not in config.DUREES_GROK:
+        soucis.append(f"durée {scene.get('duree')} s non prise en charge par Grok")
     codes = db.charger_json(scene.get("refs_codes"), [])
     if not codes:
         soucis.append("aucun personnage de référence")

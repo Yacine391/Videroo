@@ -950,3 +950,36 @@ class TestTypeSerieEnPlans(unittest.TestCase):
         self.assertFalse([a for a in res.avertissements if a.niveau != "info"])
         services.appliquer_pack(pid, res)
         self.assertEqual(services.projet(pid)["vitesse"], 1.3)
+
+
+class TestEtiquettesReformulees(unittest.TestCase):
+    """Épisode 3 du « Mariage forcé » : « Durée utile avant accélération »,
+    « Repère brut », « RACCORD ET MONTAGE » — mêmes sens, autres mots."""
+
+    PACK = (
+        "PLAN 01 — LA PORTE | 00:00–00:11 (11 s)\nRésumé sans prompt.\n\n"
+        "PLAN 02 — LA SUITE | 00:11–00:17 (6 s)\nRésumé sans prompt.\n\n"
+        "PLAN 01 — LA PORTE\nRepère brut : 00:00–00:11.\n"
+        "Durée utile avant accélération : 11 secondes.\nRéférences à joindre : Nour.\n\n"
+        "PROMPT IMAGE DE DÉPART\nUn couloir.\n\nPROMPT VIDÉO\nNour parle.\n« Bah oui. »\n\n"
+        "RACCORD ET MONTAGE — NE PAS LIRE\nNote de montage.\n\n"
+        "PLAN 02 — LA SUITE\nRéférences à joindre : Nour.\n\n"
+        "PROMPT IMAGE DE DÉPART\nUne chambre.\n\nPROMPT VIDÉO\nNour se tait.\n\n"
+        "RACCORD ET MONTAGE — NE PAS LIRE\nAutre note.\n"
+    )
+
+    def test_le_sens_suffit(self):
+        from videroo import db, services
+
+        tests.reinitialiser()
+        pid = services.creer_projet("Épisode 3", "serie")
+        db.exec1("INSERT INTO personnages (projet_id, code, surnom, etat, ordre) VALUES (?,?,?,?,?)",
+                 (pid, "R1", "NOUR", "UNIQUE", 1))
+        res = services.analyser_pack(self.PACK, "serie", pid)
+        p1, p2 = res.scenes
+        self.assertEqual(res.etiquettes_inconnues, [])
+        self.assertEqual(p1["duree"], 15)  # 11 s de montage → 15 s chez Grok
+        self.assertEqual(p2["duree"], 6)   # durée lue dans le titre « (6 s) »
+        self.assertNotIn("Note de montage", p1["prompt_video"])
+        self.assertTrue(p1["prompt_video"].endswith("« Bah oui. »"))
+        self.assertEqual(p1["refs_codes"], ["R1"])
