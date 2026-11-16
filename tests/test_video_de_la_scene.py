@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import tests
 from videroo import media
 
 
@@ -245,3 +246,101 @@ class TestVideoRapide(unittest.TestCase):
                 object(), {}, {"https://x/vieille.mp4"}, 60, None, marqueur="scène 22 :"
             )
         self.assertEqual(etat, "video")
+
+
+class TestRefusDeGrok(unittest.TestCase):
+    """16 novembre 2026 : « Vous avez atteint votre limite hebdomadaire » ignoré,
+    quinze minutes d'attente, et le clic « à court » ne changeait rien."""
+
+    MARQUEUR = '"le_mariage_force" - Épisode 3 :'
+
+    def _page(self, texte):
+        class Page:
+            def evaluate(self, js, m):
+                i = texte.rfind(m)
+                return None if i < 0 else texte[i + len(m):]
+        return Page()
+
+    def _refus(self, texte, ctx=None, video=None):
+        from unittest import mock
+
+        from videroo.adapters import grok, navigateur, selecteurs
+
+        sel = selecteurs.charger()["grok"]
+        with mock.patch.object(grok.AdaptateurGrok, "_videos_de_la_reponse", return_value=video or []), \
+             mock.patch.object(navigateur, "present", return_value=None):
+            return grok.AdaptateurGrok()._refus_dans_la_reponse(self._page(texte), sel, self.MARQUEUR, ctx)
+
+    def test_la_limite_hebdomadaire_est_reconnue(self):
+        texte = (self.MARQUEUR + " prompt…\nDis-moi quand tu as de nouveau des crédits.\n"
+                 "Vous avez atteint votre limite hebdomadaire\nIncrease usage")
+        self.assertTrue(self._refus(texte))
+
+    def test_un_vieux_refus_plus_haut_ne_compte_pas(self):
+        texte = ("Vous avez atteint votre limite hebdomadaire (hier)\n"
+                 + self.MARQUEUR + " prompt…\nGénération de la vidéo…")
+        self.assertEqual(self._refus(texte), "")
+
+    def test_une_video_dans_la_reponse_prime(self):
+        texte = self.MARQUEUR + " prompt…\nVous avez atteint votre limite hebdomadaire"
+        self.assertEqual(self._refus(texte, video=["https://x/v.mp4"]), "")
+
+    def test_ton_clic_a_court_pendant_lattente(self):
+        from videroo import comptes, db
+        from videroo.adapters import base
+
+        tests.reinitialiser()
+        cid = comptes.ajouter("grok", "Essai")
+        ctx = base.ContexteTache(
+            projet_id=1, tache_id=1, cible_type="video", cible_id=1, libelle="x",
+            prompt="", dossier_projet=Path("."), chemin_sortie=Path("x.mp4"),
+            compte_id=cid, extras={"envoye_le": "2026-11-16T11:24:35"},
+        )
+        texte = self.MARQUEUR + " prompt…\nGénération de la vidéo…"
+        self.assertEqual(self._refus(texte, ctx), "")
+        db.exec1("UPDATE comptes_ia SET quota_epuise_le=? WHERE id=?", ("2026-11-16T11:29:51", cid))
+        self.assertTrue(self._refus(texte, ctx))
+
+
+class TestVideoDeLaReponseSansComparaison(unittest.TestCase):
+    """16 novembre 2026 : la bonne vidéo de la scène 5, prise dans la réponse,
+    a été écartée parce qu'elle ressemblait à l'image de la scène 11."""
+
+    def test_la_comparaison_dimages_ne_juge_pas_la_reponse(self):
+        from unittest import mock
+
+        from videroo.adapters import base, grok
+
+        dossier = Path(tempfile.mkdtemp())
+        try:
+            class Http:
+                ok = True
+
+                def body(self):
+                    return b"video"
+
+            class Page:
+                url = "https://grok.com/imagine/agent/a?conversation=b"
+
+                class request:
+                    @staticmethod
+                    def get(src):
+                        return Http()
+
+            ctx = base.ContexteTache(
+                projet_id=1, tache_id=1, cible_type="video", cible_id=5, libelle="s5",
+                prompt="", dossier_projet=dossier, chemin_sortie=dossier / "scene-05_video.mp4",
+                fichiers_joints=[dossier / "scene-05_image.png"],
+                extras={"images_scenes": {11: str(dossier / "scene-11_image.png")}},
+            )
+            adaptateur = grok.AdaptateurGrok()
+            with mock.patch.object(grok.AdaptateurGrok, "_sources_videos", return_value=set()), \
+                 mock.patch.object(grok.AdaptateurGrok, "_mettre_de_cote_si_autre",
+                                   return_value=True) as comparer:
+                resultat = adaptateur._telecharger(
+                    Page(), {}, ctx, set(), set(), reponse=["https://x/reponse.mp4"]
+                )
+            self.assertEqual(resultat.etat, base.TERMINE)
+            comparer.assert_not_called()
+        finally:
+            shutil.rmtree(dossier, ignore_errors=True)

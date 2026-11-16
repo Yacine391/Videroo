@@ -131,6 +131,21 @@ DEFAUT: dict = {
             "[role='option']:has-text('9:16')",
         ],
         "videos_reponse": ["video", "a[href$='.mp4']", "source[src$='.mp4']"],
+        # Refus de Grok DANS SA RÉPONSE à notre message (expressions régulières,
+        # sans accents ni majuscules) : limite atteinte, aucune vidéo produite.
+        # Lu seulement après notre message : un vieux refus plus haut dans le
+        # chat ne compte pas.
+        "refus_quota": [
+            r"atteint votre limite",
+            r"limite (hebdomadaire|quotidienne|d.utilisation)",
+            r"increase usage",
+            r"(weekly|daily|usage) limit",
+            r"reached your .{0,20}limit",
+            r"de nouveau des credits",
+            r"plus de credits?",
+            r"out of credits",
+            r"quota (est )?(atteint|epuise)",
+        ],
         # Grok travaille encore (une seconde prise peut encore arriver).
         "signes_travail": [
             "text=/Travaille depuis/i",

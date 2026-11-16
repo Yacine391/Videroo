@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import os
 import queue
 import re
+import signal
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -104,7 +107,15 @@ def fenetres_restees_ouvertes() -> list[dict]:
             continue
         for argument in arguments:
             if argument.startswith("--user-data-dir=") and argument[16:].startswith(racine):
-                trouves.append({"pid": int(entree.name), "profil": argument[16:]})
+                # « profil » = NOM du dossier, comme profils_en_cours() : le
+                # 16 novembre 2026, ce champ contenait le chemin complet, la
+                # comparaison avec les noms ne trouvait jamais rien, et le ménage
+                # du lancement a tué les Chrome qui travaillaient.
+                trouves.append({
+                    "pid": int(entree.name),
+                    "profil": Path(argument[16:]).name,
+                    "chemin": argument[16:],
+                })
                 break
     return trouves
 
@@ -641,8 +652,14 @@ class SessionNavigateur:
             except Exception:
                 pass
             self._pw = None
-        # Plus aucun profil ouvert : l'écran virtuel n'a plus de raison de tourner.
-        ecran.arreter()
+        # Plus aucun profil ouvert DANS CETTE SESSION. L'écran virtuel est commun à
+        # toutes : le 16 novembre 2026, la session Grok l'a éteint en fermant le
+        # Chrome de Dariya, et le Chrome de ChatGPT, qui travaillait dessus, est
+        # mort avec lui. On ne l'éteint que si plus personne ne s'en sert.
+        with _verrou:
+            autres = [s for s in _sessions.values() if s is not self and s._contextes]
+        if not autres:
+            ecran.arreter()
 
     def fermer(self, profil: str | None = None) -> None:
         self.executer(self._fermer, profil)
@@ -686,13 +703,31 @@ def sessions_ouvertes() -> dict[str, SessionNavigateur]:
         return dict(_sessions)
 
 
-def fermer_toutes() -> None:
-    """Ferme toutes les sessions : plus un seul Chrome de Videroo en mémoire."""
+#: Levé à l'arrêt de l'application. Les attentes longues (image, vidéo) le
+#  regardent et rendent la main : le 16 novembre 2026, un arrêt a patienté
+#  quinze minutes derrière une attente Grok, et l'ancien serveur, invisible,
+#  a continué d'agir sur la chaîne pendant que le nouveau tournait.
+ARRET = threading.Event()
+
+
+def fermer_toutes(delai: float = 20.0) -> None:
+    """Ferme toutes les sessions : plus un seul Chrome de Videroo en mémoire.
+
+    Borné dans le temps : une session occupée ne retient pas l'arrêt au-delà
+    de `delai` secondes ; ses Chrome sont alors terminés par le système.
+    """
+    fils = []
     for s in sessions_ouvertes().values():
-        try:
-            s.fermer()
-        except Exception:
-            pass
+        f = threading.Thread(target=lambda s=s: s.fermer(), daemon=True)
+        f.start()
+        fils.append(f)
+    limite = time.monotonic() + delai
+    for f in fils:
+        f.join(max(0.0, limite - time.monotonic()))
+    if any(f.is_alive() for f in fils):
+        for fenetre in fenetres_restees_ouvertes():
+            with contextlib.suppress(OSError):
+                os.kill(fenetre["pid"], signal.SIGTERM)
     ecran.arreter()
 
 

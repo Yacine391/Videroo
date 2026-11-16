@@ -25,6 +25,7 @@ _worker: list[runner.Worker] | None = None
 @contextlib.asynccontextmanager
 async def cycle(app: FastAPI):
     global _worker
+    navigateur.ARRET.clear()  # un démarrage annule tout arrêt précédent
     config.preparer_dossiers()
     db.initialiser()
     registre.installer()
@@ -35,10 +36,15 @@ async def cycle(app: FastAPI):
         w.start()
     print(f"Videroo {__version__} prete sur http://{config.HOTE}:{config.PORT}")
     yield
+    navigateur.ARRET.set()  # les attentes en cours rendent la main tout de suite
     for w in _worker or []:
         w.stop()
     with contextlib.suppress(Exception):
         navigateur.fermer_toutes()
+    # Les attentes ont rendu la main et les Chrome sont fermés : le signal a
+    # servi. Le laisser levé bloquerait toute attente d'un futur démarrage
+    # dans le même processus.
+    navigateur.ARRET.clear()
 
 
 app = FastAPI(title="Videroo", version=__version__, lifespan=cycle)

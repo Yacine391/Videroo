@@ -30,6 +30,13 @@ def annonce_de_partie(ctx: base.ContexteTache) -> str:
     return f'Nouvelle série "{serie}" :'
 
 
+def _page_fermee(page) -> bool:
+    try:
+        return bool(page.is_closed())
+    except Exception:
+        return False
+
+
 def _page_en_erreur(page) -> bool:
     """Vrai si Grok a remplacé la conversation par sa page « erreur, réessayez »."""
     for texte in ("n'a pas pu se charger", "Une erreur est survenue", "Something went wrong"):
@@ -453,6 +460,7 @@ class AdaptateurGrok(base.Adaptateur):
             )
         # Point de non-retour : le quota video peut avoir ete depense.
         ctx.envoye = True
+        ctx.extras["envoye_le"] = db.maintenant()
         db.definir_reglage(cle_chat, serie_ici)
         ctx.journaliser(f"Prompt vidéo envoyé à Grok ({comment}).")
         if premiere:
@@ -513,6 +521,33 @@ class AdaptateurGrok(base.Adaptateur):
                 "qui démarre sur la bonne image.",
                 url=page.url,
             )
+        if attente == "arret":
+            return base.ResultatGeneration(
+                base.A_VERIFIER,
+                "Videroo s'est arrêté pendant l'attente de la vidéo. Le prompt était "
+                "parti : la vidéo est peut-être prête chez Grok. Rien n'a été relancé.",
+                instruction="Clique « Récupérer le résultat » : l'application prendra la "
+                "vidéo de la réponse, sans rien renvoyer.",
+            )
+        if attente == "ferme":
+            return base.ResultatGeneration(
+                base.A_VERIFIER,
+                "Le Chrome de Grok a été fermé pendant l'attente de la vidéo. Le prompt "
+                "était parti : la vidéo est peut-être prête chez Grok. Rien n'a été relancé.",
+                instruction="Clique « Récupérer le résultat » : l'application rouvrira le "
+                "chat et prendra la vidéo de la réponse, sans rien renvoyer.",
+            )
+        if attente == "refus":
+            # Grok a refusé sans rien produire (limite atteinte), ou tu as déclaré
+            # ce compte à court pendant qu'il attendait : rien n'a été généré.
+            # QUOTA fait basculer la production sur le compte suivant, qui reçoit
+            # le prompt aussitôt — c'est la première génération, pas une relance.
+            return base.ResultatGeneration(
+                base.QUOTA,
+                f"{ctx.extras.get('refus')} Aucune vidéo n'a été produite sur "
+                f"« {ctx.compte_libelle} » : la scène part sur le compte suivant.",
+                url=page.url,
+            )
         if attente == "quota":
             # Le prompt est deja parti : on ne sait pas si un credit a ete pris.
             # On met donc le compte de cote (la suite partira toute seule sur le
@@ -547,6 +582,48 @@ class AdaptateurGrok(base.Adaptateur):
         return resultat
 
     ATTENTE_FIN_DE_TRAVAIL = 360
+
+    def _texte_apres_notre_message(self, page, marqueur: str) -> str | None:
+        try:
+            return page.evaluate(
+                """(m) => { const t = document.body.innerText || '';
+                            const i = t.lastIndexOf(m);
+                            return i < 0 ? null : t.slice(i + m.length); }""",
+                marqueur.strip(),
+            )
+        except Exception:
+            return None
+
+    def _refus_dans_la_reponse(self, page, sel, marqueur: str, ctx) -> str:
+        """Pourquoi abandonner cette attente (texte), ou "" pour continuer.
+
+        Le 16 novembre 2026, Grok a répondu « Vous avez atteint votre limite
+        hebdomadaire » : l'application l'ignorait et attendait quinze minutes ;
+        même ton clic « à court → Dariya » n'y changeait rien. Une vidéo déjà
+        dans la réponse prime toujours sur tout refus.
+        """
+        import re as _re
+        import unicodedata as _ud
+
+        if self._videos_de_la_reponse(page, marqueur):
+            return ""
+        apres = self._texte_apres_notre_message(page, marqueur)
+        if apres:
+            plat = "".join(
+                c for c in _ud.normalize("NFD", apres.lower()) if _ud.category(c) != "Mn"
+            )
+            for motif in sel.get("refus_quota", []):
+                if _re.search(motif, plat):
+                    return f"Grok a refusé dans sa réponse (« {motif} » : limite atteinte)."
+        if ctx is not None and ctx.compte_id:
+            ligne = db.q1("SELECT quota_epuise_le FROM comptes_ia WHERE id=?", (ctx.compte_id,))
+            declare = ligne and ligne["quota_epuise_le"] and (
+                ligne["quota_epuise_le"] >= ctx.extras.get("envoye_le", "9")
+            )
+            travaille = navigateur.present(page, sel.get("signes_travail", []), timeout=500)
+            if declare and not travaille:
+                return "Tu as déclaré ce compte à court pendant l'attente, et Grok ne travaille pas."
+        return ""
 
     def _attendre_que_grok_ait_fini(self, page, sel, ctx) -> None:
         """Attend que Grok ne travaille plus avant de relever les vidéos présentes.
@@ -737,6 +814,7 @@ class AdaptateurGrok(base.Adaptateur):
                 f"téléchargeable(s) : impossible de remonter à la {rang}ᵉ.",
                 url=page.url,
             )
+        de_la_reponse = False
         if rang == 1:
             # D'abord la vidéo que l'agent a mise dans sa réponse au message de
             # cette scène : c'est celle que tu vois dans le chat.
@@ -748,9 +826,15 @@ class AdaptateurGrok(base.Adaptateur):
             ):
                 reponse = self._videos_de_la_reponse(page, marqueur) if marqueur else None
                 if reponse:
-                    directes = [a for a in reponse if not a.startswith(("blob:", "data:"))] or directes
+                    trouvees = [a for a in reponse if not a.startswith(("blob:", "data:"))]
+                    if trouvees:
+                        directes, de_la_reponse = trouvees, True
                     break
-        choisie = self._choisir_par_image(page, ctx, directes) if rang == 1 else None
+        # Une seule vidéo dans la réponse à ce message : c'est elle, sans débat.
+        unique = de_la_reponse and len(directes) == 1
+        choisie = (
+            self._choisir_par_image(page, ctx, directes) if rang == 1 and not unique else None
+        )
         if choisie is not None:
             return choisie
         adresse = directes[-rang]
@@ -906,6 +990,12 @@ class AdaptateurGrok(base.Adaptateur):
         # doivent pas masquer la nôtre si elle passe ensuite dans la réponse.
         avant_envoi = {a.split("?")[0] for a in avant}
         while time.time() < fin:
+            if navigateur.ARRET.is_set():
+                return "arret"
+            if _page_fermee(page):
+                # Attendre quinze minutes contre une page morte ne sert à rien :
+                # la vidéo, elle, continue peut-être chez Grok.
+                return "ferme"
             nouvelles = self._sources_videos(page, sel) - avant
             if nouvelles and time.time() < plancher and marqueur:
                 # Le 16 novembre 2026, Grok a rendu une vidéo de 6 s en 25 s : le
@@ -929,8 +1019,16 @@ class AdaptateurGrok(base.Adaptateur):
                 else:
                     time.sleep(3)  # laisser la lecture se stabiliser
                     return "video"
+            if time.time() >= prochain_controle and marqueur:
+                # Toutes les 10 s : Grok a-t-il REFUSÉ dans sa réponse (limite
+                # atteinte), ou as-tu déclaré ce compte à court entre-temps ?
+                refus = self._refus_dans_la_reponse(page, sel, marqueur, ctx)
+                if refus:
+                    if ctx is not None:
+                        ctx.extras["refus"] = refus
+                    return "refus"
             if time.time() >= prochain_controle:
-                prochain_controle = time.time() + 20
+                prochain_controle = time.time() + 10
                 # La vidéo prime : un signe de quota n'est retenu que si rien
                 # n'est apparu, sinon on jetterait un résultat déjà payé.
                 if navigateur.preuve(page, sel.get("signes_quota", []), timeout=800):
@@ -1090,14 +1188,22 @@ class AdaptateurGrok(base.Adaptateur):
 
         if len(adresses_directes) > 1 and ctx.fichiers_joints:
             adresses_directes = self._prises_par_ressemblance(page, ctx, adresses_directes)
+        dans_la_reponse = reponse is not None
         for src in adresses_directes:
             try:
-                reponse = page.request.get(src)
-                if not reponse.ok:
+                http = page.request.get(src)
+                if not http.ok:
                     continue
-                ctx.chemin_sortie.write_bytes(reponse.body())
+                ctx.chemin_sortie.write_bytes(http.body())
                 if ctx.chemin_sortie.stat().st_size > 0:
-                    if ecartees is not None and self._mettre_de_cote_si_autre(ctx, src):
+                    # Une vidéo de la RÉPONSE à notre message est la nôtre : la
+                    # comparaison d'images ne sert qu'en secours. Le 16 novembre
+                    # 2026, elle a écarté la bonne vidéo de la scène 5 (deux plans
+                    # de Nesrine, et ce format ne démarre pas pile sur l'image).
+                    if (
+                        not dans_la_reponse and ecartees is not None
+                        and self._mettre_de_cote_si_autre(ctx, src)
+                    ):
                         ecartees.add(src)
                         continue
                     return base.ResultatGeneration(

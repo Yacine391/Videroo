@@ -442,6 +442,8 @@ class AdaptateurChatGPT(base.Adaptateur):
         tour = 0
         candidate: tuple[str, str, int] | None = None
         while time.time() < fin:
+            if navigateur.ARRET.is_set():
+                return None, "Videroo s'est arrêté pendant l'attente"
             trouvee, candidate = self._image_au_contenu_neuf(page, sel, deja_vues, candidate)
             if trouvee:
                 return trouvee, ""

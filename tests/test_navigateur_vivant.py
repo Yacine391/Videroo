@@ -335,3 +335,108 @@ class TestLeMenageNommeCeQuIlFerme(unittest.TestCase):
         dernier = db.q("SELECT message FROM journal ORDER BY id DESC LIMIT 1")[0]["message"]
         self.assertIn("grok-dariya", dernier, "il faut nommer la fenêtre fermée")
         self.assertIn("profil_navigateur", dernier, "il faut nommer l'épargnée")
+
+
+class TestEcranPartage(unittest.TestCase):
+    """16 novembre 2026 : fermer le Chrome de Grok a éteint l'écran virtuel, et le
+    Chrome de ChatGPT, qui travaillait dessus, est mort avec lui."""
+
+    def test_lecran_reste_allume_tant_quune_autre_session_lutilise(self):
+        from unittest import mock
+
+        from videroo.adapters import ecran, navigateur
+
+        grok, chatgpt = navigateur.SessionNavigateur(), navigateur.SessionNavigateur()
+        chatgpt._contextes["chatgpt-jules"] = object()
+        grok._contextes["grok-dariya"] = mock.Mock()
+        with mock.patch.dict(navigateur._sessions, {"grok": grok, "chatgpt": chatgpt}, clear=True), \
+             mock.patch.object(ecran, "arreter") as arreter, \
+             mock.patch.object(navigateur.db, "journaliser"):
+            grok._fermer("grok-dariya")
+            arreter.assert_not_called()
+            chatgpt._contextes.clear()
+            grok._contextes["grok-dariya"] = mock.Mock()
+            grok._fermer("grok-dariya")
+            arreter.assert_called_once()
+
+
+class TestMenageAvecDeVraisChemins(unittest.TestCase):
+    """16 novembre 2026 : /proc donne des CHEMINS complets ; la protection
+    comparait des noms de dossier. Rien n'était protégé."""
+
+    def test_le_chrome_qui_travaille_est_epargne(self):
+        from unittest import mock
+
+        from videroo import config
+        from videroo.adapters import navigateur
+
+        racine = str(config.DOSSIER_DONNEES.resolve())
+        cmdlines = {
+            "111": f"chrome\0--user-data-dir={racine}/profil_navigateur\0".encode(),
+            "222": f"chrome\0--user-data-dir={racine}/profils/grok-dariya\0".encode(),
+        }
+
+        class Entree:
+            def __init__(self, nom):
+                self.name = nom
+
+        reel_open = open
+
+        def faux_open(chemin, mode="r", *a, **k):
+            for pid, contenu in cmdlines.items():
+                if chemin == f"/proc/{pid}/cmdline":
+                    import io
+                    return io.BytesIO(contenu)
+            return reel_open(chemin, mode, *a, **k)
+
+        with mock.patch("os.scandir", return_value=[Entree("111"), Entree("222")]), \
+             mock.patch("builtins.open", faux_open):
+            fenetres = navigateur.fenetres_restees_ouvertes()
+        self.assertEqual({f["profil"] for f in fenetres}, {"profil_navigateur", "grok-dariya"})
+        with mock.patch.object(navigateur, "fenetres_restees_ouvertes", return_value=fenetres), \
+             mock.patch.object(navigateur, "profils_en_cours", lambda: {"profil_navigateur"}), \
+             mock.patch("os.kill") as tue, mock.patch("time.sleep"), \
+             mock.patch.object(navigateur, "_attendre_profils_libres", return_value=set()):
+            navigateur.fermer_fenetres_restees_ouvertes()
+        self.assertEqual({a.args[0] for a in tue.call_args_list}, {222})
+
+
+class TestArretBorne(unittest.TestCase):
+    """16 novembre 2026 : l'arrêt a attendu 15 min une attente Grok ; l'ancien
+    serveur a continué d'agir sur la chaîne à côté du nouveau."""
+
+    def test_une_session_occupee_ne_retient_pas_larret(self):
+        import threading as th
+        import time as tm
+        from unittest import mock
+
+        from videroo.adapters import ecran, navigateur
+
+        bloque = th.Event()
+
+        class Occupee:
+            def fermer(self):
+                bloque.wait(30)  # occupée par une longue attente
+
+        debut = tm.monotonic()
+        with mock.patch.dict(navigateur._sessions, {"grok": Occupee()}, clear=True), \
+             mock.patch.object(navigateur, "fenetres_restees_ouvertes",
+                               return_value=[{"pid": 4242, "profil": "principal"}]), \
+             mock.patch("os.kill") as tue, mock.patch.object(ecran, "arreter"):
+            navigateur.fermer_toutes(delai=0.5)
+        bloque.set()
+        self.assertLess(tm.monotonic() - debut, 5)
+        tue.assert_called()
+
+    def test_le_signal_darret_interrompt_lattente_video(self):
+        from unittest import mock
+
+        from videroo.adapters import grok, navigateur
+
+        navigateur.ARRET.set()
+        try:
+            with mock.patch.object(grok, "_page_fermee", return_value=False):
+                etat = grok.AdaptateurGrok()._attendre_video(object(), {}, set(), 600)
+        finally:
+            navigateur.ARRET.clear()
+        self.assertEqual(etat, "arret")
