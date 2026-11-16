@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block titre %}Histoire{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+
+<div class="carte">
+  <h3 style="margin-top:0">Importer le pack produit par ton V6</h3>
+  <p class="mono">Colle le package complet (texte brut ou Markdown) ou choisis un fichier .md / .txt / .json.
+  L'application distingue le métaprompt lui-même d'un pack d'histoire et signale ce qui manque — elle n'invente rien.</p>
+  <form method="post" action="/projets/{{ p.id }}/importer" enctype="multipart/form-data">
+    <label for="texte">Coller le pack</label>
+    <textarea id="texte" name="texte" class="grand" placeholder="🎬 HISTOIRE : ...&#10;&#10;Moteur : ...&#10;..."></textarea>
+    <label for="fichier">…ou importer un fichier</label>
+    <input type="file" id="fichier" name="fichier" accept=".md,.txt,.json,.markdown">
+    <div class="rangee" style="margin-top:12px">
+      <button type="submit">Analyser et importer</button>
+      <span class="mono">Les images et vidéos déjà obtenues sont conservées lors d'un réimport.</span>
+    </div>
+  </form>
+</div>
+
+{% if inconnues %}
+<div class="carte" id="etiquettes">
+  <h3 style="margin-top:0">Apprends-moi ce nouveau format ({{ inconnues|length }} étiquette(s) inconnue(s))</h3>
+  <p class="mono">Ces étiquettes reviennent dans des scènes où il manque encore un prompt ou une durée.
+  Dis une fois ce qu'elles sont : l'application relit le pack tout de suite et s'en souviendra pour tous les packs suivants.
+  Le texte est repris tel quel, rien n'est reformulé.</p>
+  <form method="post" action="/projets/{{ p.id }}/etiquettes">
+    {% for e in inconnues %}
+    <div class="note" style="display:block">
+      <div class="rangee" style="justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="min-width:0;flex:1">
+          <strong>« {{ e.etiquette }} »</strong>
+          <span class="mono">— scène(s) {{ e.scenes|join(', ') }}</span>
+          <div class="mono" style="opacity:.8;overflow-wrap:anywhere">{{ e.ligne }}</div>
+          {% if e.extrait %}<div class="mono" style="opacity:.6;overflow-wrap:anywhere">↳ {{ e.extrait }}</div>{% endif %}
+        </div>
+        <select name="e::{{ e.cle }}">
+          <option value="">— je ne sais pas encore —</option>
+          {% for valeur, libelle in champs.items() %}
+          <option value="{{ valeur }}">{{ libelle }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    {% endfor %}
+    <div class="rangee" style="margin-top:12px">
+      <button type="submit">Retenir et relire le pack</button>
+      <span class="mono">Les images et vidéos déjà obtenues sont conservées.</span>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if d.avertissements %}
+{% set a_corriger = d.avertissements|rejectattr('niveau', 'equalto', 'info')|list %}
+<h2>Étape de validation —
+  {% if a_corriger %}{{ a_corriger|length }} point(s) à corriger
+  {% else %}rien à corriger{% endif %}
+</h2>
+<p class="sous-titre">
+  {% if a_corriger %}Corrige ce qui compte avant toute génération. Les lignes « manquant » et « suspect » viennent du document, pas d'une invention.
+  {% else %}Le pack est lisible de bout en bout. Les notes ci-dessous sont là pour information, elles ne bloquent rien.{% endif %}
+</p>
+{% for a in d.avertissements %}
+  <div class="{{ 'alerte' if a.niveau == 'manquant' else ('alerte' if a.niveau == 'suspect' else 'note') }}">
+    <span class="etiquette {{ 'ko' if a.niveau=='manquant' else ('attente' if a.niveau=='suspect' else 'info') }}">{{ a.niveau }}</span>
+    <strong>{{ a.cible }}</strong> — {{ a.message }}
+  </div>
+{% endfor %}
+{% endif %}
+
+<h2>En-tête de l'histoire</h2>
+<form method="post" action="/projets/{{ p.id }}/entete">
+<input type="hidden" name="retour_vers" value="histoire">
+<div class="grille deux">
+  <div class="carte">
+    <label>Nom du projet</label><input type="text" name="nom" value="{{ p.nom or '' }}">
+    <label>Titre de l'histoire</label><input type="text" name="titre" value="{{ p.titre or '' }}">
+    <label>Moteur</label><input type="text" name="moteur" value="{{ p.moteur or '' }}">
+    <label>Univers</label><input type="text" name="univers" value="{{ p.univers or '' }}">
+    <label>Parties</label><input type="text" name="parties" value="{{ p.parties or '' }}">
+  </div>
+  <div class="carte">
+    <label>En une phrase</label><textarea name="une_phrase">{{ p.une_phrase or '' }}</textarea>
+    <label>Règle du méchant (Temps 1)</label><textarea name="regle_mechant">{{ p.regle_mechant or '' }}</textarea>
+    <label>Menace évolutive</label><textarea name="menace_evolutive">{{ p.menace_evolutive or '' }}</textarea>
+  </div>
+  <div class="carte">
+    <label>Prix final</label><textarea name="prix_final">{{ p.prix_final or '' }}</textarea>
+    <label>Cliffhanger</label><textarea name="cliffhanger">{{ p.cliffhanger or '' }}</textarea>
+    <label>Réplique son TikTok</label><input type="text" name="replique_tiktok" value="{{ p.replique_tiktok or '' }}">
+  </div>
+  <div class="carte">
+    <label>Instructions de miniature</label><textarea name="instructions_miniature" class="grand">{{ p.instructions_miniature or '' }}</textarea>
+  </div>
+</div>
+<div class="rangee" style="margin-top:12px"><button type="submit">Enregistrer l'en-tête</button></div>
+</form>
+
+<h2>Durées</h2>
+<div class="grille trois">
+  <div class="carte"><div class="chiffre">{{ d.duree_totale_pack }} s</div><div class="libelle">somme des scènes</div></div>
+  <div class="carte"><div class="chiffre">{{ p.duree_annoncee or '—' }}</div><div class="libelle">annoncée dans le pack</div></div>
+  <div class="carte"><div class="chiffre">{{ d.scenes|length }}</div><div class="libelle">scènes lues</div></div>
+</div>
+<form method="post" action="/projets/{{ p.id }}/entete" class="carte">
+  <input type="hidden" name="retour_vers" value="histoire">
+  <div class="grille trois">
+    <div><label>Durée souhaitée minimum (s)</label><input type="text" name="duree_cible_min" value="{{ p.duree_cible_min }}"></div>
+    <div><label>Durée souhaitée maximum (s)</label><input type="text" name="duree_cible_max" value="{{ p.duree_cible_max }}"></div>
+    <div style="align-self:end"><button type="submit">Enregistrer</button></div>
+  </div>
+</form>
+
+{% if p.pack_brut %}
+<details><summary>Voir le pack importé tel quel ({{ p.pack_brut|length }} caractères)</summary>
+<div class="carte copiable">
+  <button class="doux petit" type="button" onclick="copier('pack_brut', this)">Copier</button>
+  <textarea id="pack_brut" class="grand" readonly>{{ p.pack_brut }}</textarea>
+</div></details>
+{% endif %}
+{% endblock %}

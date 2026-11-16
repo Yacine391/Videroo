@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block titre %}Admin{% endblock %}
+{% block corps %}
+<h1>Espace admin</h1>
+<p class="sous-titre">Tes comptes, tes réglages et ton navigateur dédié. Tout reste sur cet ordinateur.</p>
+
+<h2>Mes comptes</h2>
+<p class="sous-titre">Un profil navigateur par compte : plusieurs abonnements cohabitent sans
+mélanger leurs sessions. La production utilise <strong>le premier compte disponible de la
+liste</strong> et passe au suivant si le quota est atteint — uniquement quand rien n'a encore
+été envoyé, pour ne jamais payer deux fois la même génération.</p>
+
+{% if not navigateur.playwright %}<div class="alerte">{{ navigateur.message }}</div>{% endif %}
+{% if mode_navigateur == 'chrome_existant' %}
+<div class="alerte">Mode « Chrome existant » : tous les comptes partagent la session de ton
+Chrome. Pour utiliser plusieurs abonnements, repasse en « Profil dédié ».</div>
+{% endif %}
+
+{% for site, infos in sites.items() %}
+<h3>{{ infos.nom }} <span class="mono">— {{ infos.role }}</span></h3>
+{% if rotation[site] %}
+<div class="note">
+  <strong>Ordre d'utilisation :</strong>
+  {% for r in rotation[site] %}
+    {{ loop.index }}. {{ r.libelle }}{% if r.recharge %} <span class="mono">(recharge {{ r.recharge }})</span>{% endif %}{% if not loop.last %} → {% endif %}
+  {% endfor %}
+  <br>
+  {% if strategie == 'recharge_proche' %}
+  On dépense d'abord le quota qui se recharge le plus tôt : c'est le plus périssable.
+  Les flèches ▲▼ ne servent qu'à départager deux comptes à égalité.
+  {% else %}
+  Ordre manuel : les flèches ▲▼ décident. Change la stratégie dans Réglages → Comptes.
+  {% endif %}
+</div>
+{% else %}
+<div class="alerte">Aucun compte {{ infos.nom }} disponible : tous sont épuisés ou hors rotation.</div>
+{% endif %}
+<table>
+<tr><th style="width:30px">#</th><th>Compte</th><th>État</th><th>Quota</th><th>Profil</th><th>Actions</th></tr>
+{% for c in comptes[site] %}
+<tr>
+  <td class="mono">{{ loop.index }}</td>
+  <td>
+    <form method="post" action="/admin/comptes/{{ c.id }}/modifier">
+      <input type="text" name="libelle" value="{{ c.libelle }}" style="width:150px">
+      {% if c.proprietaire %}<span class="etiquette attente">compte de {{ c.proprietaire }} · hors rotation</span>{% endif %}
+      <input type="text" name="email" value="{{ c.email or '' }}" placeholder="adresse e-mail" style="width:190px;margin-top:4px">
+      <input type="text" name="chat_url" value="{{ c.chat_url or '' }}"
+             placeholder="adresse du chat dédié de ce compte" style="width:190px;margin-top:4px">
+      <div class="mono" style="opacity:.7;margin-top:2px">
+        {% if c.chat_url %}Les prompts partent dans ce chat ; les règles y sont les tiennes.
+        {% else %}Vide : un chat neuf sera ouvert à chaque fois.{% endif %}
+      </div>
+      <label style="text-transform:none;margin:4px 0 0">
+        <input type="checkbox" name="actif" value="1" style="width:auto" {{ 'checked' if c.actif }}> dans la rotation
+      </label>
+      <button class="doux petit" type="submit" style="margin-top:4px">Enregistrer</button>
+    </form>
+  </td>
+  <td class="pile">
+    <span class="etiquette {{ 'ok' if c.etat=='connecte' else ('ko' if c.etat=='deconnecte' else 'attente') }}">{{ c.libelle_etat }}</span>
+    {% if c.etat_source == 'manuel' %}<span class="etiquette info">confirmé par toi</span>{% endif %}
+    {% if c.verifie_le %}<span class="mono">{{ c.verifie_le }}</span>{% endif %}
+  </td>
+  <td>
+    {% if c.quota_dispo %}<span class="etiquette ok">disponible</span>
+    {% else %}<span class="etiquette ko">épuisé</span>
+      <div class="mono">depuis {{ c.quota_epuise_le }}</div>
+      {% if c.prochaine_recharge %}<div class="mono">recharge {{ c.prochaine_recharge }}</div>{% endif %}
+      <form method="post" action="/admin/comptes/{{ c.id }}/rearmer">
+        <button class="doux petit" type="submit">Réarmer</button></form>
+    {% endif %}
+    <form method="post" action="/admin/comptes/{{ c.id }}/reinitialisation" style="margin-top:6px">
+      <label style="text-transform:none;margin:0 0 2px">Recharge hebdomadaire</label>
+      <select name="jour" style="width:auto">
+        <option value="aucun" {{ 'selected' if c.reset_jour is none }}>— aucune —</option>
+        {% for j in jours %}
+        <option value="{{ loop.index0 }}" {{ 'selected' if c.reset_jour == loop.index0 }}>{{ j }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="heure" value="{{ c.reset_heure or '' }}" placeholder="14:34" style="width:70px">
+      <button class="doux petit" type="submit">OK</button>
+    </form>
+    {% if c.horaire %}<div class="mono">{{ c.horaire }}</div>{% endif %}
+    {% if c.derniere_utilisation %}<div class="mono">utilisé {{ c.derniere_utilisation }}</div>{% endif %}
+  </td>
+  <td>
+    <div class="mono">{{ c.profil }}</div>
+    {% if c.partage_avec %}
+    <div class="alerte" style="margin:6px 0">
+      <strong>Profil partagé</strong> avec {{ c.partage_avec|join(', ') }}.
+      La session Google est commune : ce compte se connectera avec la même identité.
+      <form method="post" action="/admin/comptes/{{ c.id }}/profil-separe" style="margin-top:6px">
+        <label style="text-transform:none;margin:0 0 4px">
+          <input type="checkbox" name="copier" value="1" style="width:auto">
+          copier la session actuelle
+        </label>
+        <button class="petit" type="submit">Lui donner un profil séparé</button>
+      </form>
+    </div>
+    {% endif %}
+  </td>
+  <td>
+    <div class="rangee">
+      <form method="post" action="/admin/comptes/{{ c.id }}/ouvrir">
+        <button class="petit" type="submit">Ouvrir et me connecter</button></form>
+      <form method="post" action="/admin/comptes/{{ c.id }}/verifier">
+        <button class="doux petit" type="submit">Vérifier</button></form>
+    </div>
+    <div class="rangee" style="margin-top:4px">
+      <span class="mono">Je confirme :</span>
+      <form method="post" action="/admin/comptes/{{ c.id }}/marquer">
+        <input type="hidden" name="etat" value="connecte">
+        <button class="doux petit" type="submit">connecté</button></form>
+      <form method="post" action="/admin/comptes/{{ c.id }}/marquer">
+        <input type="hidden" name="etat" value="deconnecte">
+        <button class="doux petit" type="submit">pas connecté</button></form>
+    </div>
+    <div class="rangee" style="margin-top:4px">
+      <form method="post" action="/admin/comptes/{{ c.id }}/deplacer">
+        <input type="hidden" name="sens" value="monter">
+        <button class="doux petit" type="submit">▲</button></form>
+      <form method="post" action="/admin/comptes/{{ c.id }}/deplacer">
+        <input type="hidden" name="sens" value="descendre">
+        <button class="doux petit" type="submit">▼</button></form>
+      <form method="post" action="/admin/comptes/{{ c.id }}/deconnecter" class="rangee"
+            onsubmit="return confirm('Effacer le profil de ce compte ? Tu seras déconnecté.');">
+        <input type="text" name="confirmation" placeholder="EFFACER" style="width:100px">
+        <button class="danger petit" type="submit">Déconnecter</button></form>
+      {% if comptes[site]|length > 1 %}
+      <form method="post" action="/admin/comptes/{{ c.id }}/supprimer"
+            onsubmit="return confirm('Supprimer ce compte de la liste ?');">
+        <button class="danger petit" type="submit">Supprimer</button></form>
+      {% endif %}
+    </div>
+  </td>
+</tr>
+{% endfor %}
+</table>
+<form method="post" action="/admin/comptes/ajouter" class="rangee" style="margin:8px 0 22px">
+  <input type="hidden" name="site" value="{{ site }}">
+  <input type="text" name="libelle" placeholder="Nom du compte (ex. Dariya)" required style="width:220px">
+  <input type="text" name="email" placeholder="adresse e-mail (facultatif)" style="width:240px">
+  <input type="text" name="proprietaire" placeholder="À qui ? (vide = moi, rotation)" style="width:240px">
+  <button type="submit">Ajouter un compte {{ infos.nom }}</button>
+</form>
+{% endfor %}
+
+<div class="carte" style="border-color:#3b7ddd">
+  <h3 style="margin-top:0">Accès au navigateur — deux façons</h3>
+  <p class="mono">Mode actuel :
+    <strong>{{ 'Chrome existant' if mode_navigateur == 'chrome_existant' else 'Profil dédié' }}</strong>
+    (se change dans Réglages → Comptes, plus bas).</p>
+
+  <div class="grille deux">
+    <div>
+      <h3>1. Profil dédié <span class="etiquette neutre">par défaut</span></h3>
+      <p class="mono">Une fenêtre séparée de ton Chrome, avec ses propres sessions. Tu t'y
+      connectes une fois par service.</p>
+      <div class="alerte"><strong>Limite connue :</strong> Google refuse souvent la
+      connexion depuis une fenêtre pilotée et renvoie une erreur 400. Si ton compte ChatGPT
+      passe par « Se connecter avec Google », utilise la méthode 2.</div>
+    </div>
+    <div>
+      <h3>2. Chrome existant <span class="etiquette ok">contourne le blocage</span></h3>
+      <p class="mono">Videroo se branche sur <strong>ton</strong> Chrome, là où tu es déjà
+      connecté : aucune connexion à refaire, donc aucun blocage Google.</p>
+      <ol class="mono" style="padding-left:18px">
+        <li>Ferme <strong>complètement</strong> Chrome (toutes les fenêtres).</li>
+        <li>Lance cette commande dans un terminal :</li>
+      </ol>
+      <div class="copiable">
+        <button class="doux petit" type="button" onclick="copier('cmd_chrome', this)">Copier</button>
+        <textarea id="cmd_chrome" readonly style="min-height:46px">{{ navigateur.commande_chrome }}</textarea>
+      </div>
+      <ol class="mono" start="3" style="padding-left:18px">
+        <li>Passe le mode sur « Chrome existant » et enregistre.</li>
+        <li>Clique sur « Tester le branchement », puis « Vérifier » sur chaque compte.</li>
+      </ol>
+      <div class="note">Dans ce mode, Videroo agit dans ton Chrome personnel : il peut donc
+      atteindre les sites où tu es connecté. Il ne pilote que ChatGPT et Grok, et ne ferme
+      jamais ton navigateur.</div>
+    </div>
+  </div>
+  <div class="rangee" style="margin-top:10px">
+    <form method="post" action="/admin/navigateur/tester">
+      <button type="submit">Tester le branchement</button></form>
+    <span class="mono">Adresse de débogage : {{ cdp_url }}</span>
+  </div>
+</div>
+
+<div class="carte">
+  <h3 style="margin-top:0">Navigateur dédié</h3>
+  <ul class="liste-plate">
+    <li>État : {% if navigateur.ouvert %}<span class="etiquette ok">ouvert</span>{% else %}<span class="etiquette neutre">fermé</span>{% endif %}
+      {% if navigateur.occupe %}<span class="etiquette attente">occupé par une génération</span>{% endif %}</li>
+    <li>Écran de travail :
+      {% if navigateur.ecran.installe %}
+        <span class="etiquette ok">écran à part disponible</span>
+        {% if navigateur.ecran.actif %}<span class="mono">actif sur {{ navigateur.ecran.affichage }}</span>{% endif %}
+        <div class="mono">Chrome travaille sur un écran qui n'est pas le tien : aucune
+        fenêtre n'apparaît pendant les générations.
+        {% if navigateur.ecran.dans_le_dossier_personnel %}<br>Xvfb est installé dans ton
+        dossier personnel (<span class="mono">{{ navigateur.ecran.binaire }}</span>), sans
+        droits administrateur. Pour l'installer proprement un jour :
+        <strong>{{ navigateur.ecran.commande_installation }}</strong>{% endif %}</div>
+      {% else %}
+        <span class="etiquette attente">Xvfb absent</span>
+        <div class="mono">Sans lui, et en session Wayland, les fenêtres Chrome
+        réapparaissent sur ton bureau. Une commande suffit, une seule fois :
+        <strong>{{ navigateur.ecran.commande_installation }}</strong></div>
+      {% endif %}
+    </li>
+    <li>Profil local : <span class="mono">{{ navigateur.profil }}</span></li>
+    <li>Pages ouvertes : <span class="mono">{{ navigateur.pages|join(', ') or 'aucune' }}</span></li>
+  </ul>
+  {% if fenetres_ouvertes %}
+  <div class="alerte">
+    <strong>{{ fenetres_ouvertes|length }} fenêtre(s) Chrome de Videroo encore ouverte(s).</strong>
+    Tant qu'une fenêtre tient un profil, l'application ne peut pas l'utiliser pour générer.
+    Tes connexions sont enregistrées sur le disque : les fermer ne te déconnecte pas.
+    <div class="mono">{{ fenetres_ouvertes|map(attribute='profil')|map('replace', navigateur.profil|replace('profil_navigateur',''), '')|join(', ') }}</div>
+    <form method="post" action="/admin/navigateur/menage" style="margin-top:8px">
+      <button type="submit">Fermer les fenêtres restées ouvertes</button></form>
+  </div>
+  {% endif %}
+  <div class="rangee">
+    <form method="post" action="/admin/navigateur/ouvrir"><button class="doux" type="submit">Ouvrir</button></form>
+    <form method="post" action="/admin/navigateur/fermer"><button class="doux" type="submit">Fermer</button></form>
+    <form method="post" action="/admin/navigateur/menage"><button class="doux" type="submit">Fermer les fenêtres restées ouvertes</button></form>
+  </div>
+  <div class="sep"></div>
+  <form method="post" action="/admin/profil/effacer" class="rangee"
+        onsubmit="return confirm('Effacer le profil ? Tu seras déconnecté de ChatGPT et Grok.');">
+    <input type="text" name="confirmation" placeholder="écris EFFACER" style="width:180px">
+    <button class="danger" type="submit">Déconnecter tous les comptes</button>
+    <span class="mono">Supprime le profil local. Aucun projet ni média n'est touché.</span>
+  </form>
+</div>
+
+<h2>Réglages</h2>
+<form method="post" action="/admin/reglages">
+{% for groupe in groupes %}
+  <div class="carte">
+    <h3 style="margin-top:0">{{ groupe }}</h3>
+    <div class="grille deux">
+    {% for ch in champs if ch.groupe == groupe %}
+      <div>
+        <label for="{{ ch.cle }}">{{ ch.libelle }}
+          {% if not ch.par_defaut %}<span class="etiquette info">modifié</span>{% endif %}
+        </label>
+        {% if ch.type == 'choix' %}
+          <select id="{{ ch.cle }}" name="{{ ch.cle }}">
+            {% for valeur, texte in ch.choix %}
+            <option value="{{ valeur }}" {{ 'selected' if valeur == ch.valeur }}>{{ texte }}</option>
+            {% endfor %}
+          </select>
+        {% elif ch.type == 'booleen' %}
+          <input type="hidden" name="{{ ch.cle }}__present" value="1">
+          <label style="text-transform:none;letter-spacing:0;color:var(--texte);margin-top:4px">
+            <input type="checkbox" name="{{ ch.cle }}" value="1" style="width:auto"
+                   {{ 'checked' if ch.valeur_bool }}> oui
+          </label>
+        {% elif ch.type == 'entier' %}
+          <input type="number" id="{{ ch.cle }}" name="{{ ch.cle }}" value="{{ ch.valeur }}"
+                 {% if ch.min is defined %}min="{{ ch.min }}"{% endif %}
+                 {% if ch.max is defined %}max="{{ ch.max }}"{% endif %}>
+        {% else %}
+          <input type="text" id="{{ ch.cle }}" name="{{ ch.cle }}" value="{{ ch.valeur }}">
+        {% endif %}
+        <p class="mono" style="margin:4px 0 0">{{ ch.aide }} <em>défaut : {{ ch.defaut }}</em></p>
+      </div>
+    {% endfor %}
+    </div>
+  </div>
+{% endfor %}
+  <div class="rangee">
+    <button type="submit">Enregistrer les réglages</button>
+  </div>
+</form>
+<form method="post" action="/admin/reglages/reinitialiser" style="margin-top:8px"
+      onsubmit="return confirm('Remettre tous les réglages à leur valeur par défaut ?');">
+  <button class="doux" type="submit">Tout remettre par défaut</button>
+</form>
+
+<h2>Étiquettes de pack apprises</h2>
+<p class="sous-titre">Ce que tu as appris à l'application sur les formats de tes packs. Elles valent pour tous les projets.</p>
+{% if etiquettes_apprises %}
+<div class="carte">
+  {% for cle, sens in etiquettes_apprises %}
+  <form method="post" action="/admin/etiquettes/oublier" class="rangee" style="justify-content:space-between;gap:12px;flex-wrap:wrap;margin:4px 0">
+    <span><strong>« {{ cle }} »</strong> <span class="mono">→ {{ sens }}</span></span>
+    <input type="hidden" name="cle" value="{{ cle }}">
+    <button type="submit" class="doux petit">Oublier</button>
+  </form>
+  {% endfor %}
+</div>
+{% else %}
+<p class="mono">Aucune pour l'instant : quand un pack contient une étiquette inconnue, l'onglet Histoire te demande ce qu'elle est.</p>
+{% endif %}
+
+<h2>Sélecteurs des sites</h2>
+<p class="sous-titre">Quand ChatGPT ou Grok changent leur interface, c'est le seul endroit à
+corriger. Chaque entrée est une liste essayée dans l'ordre jusqu'à ce qu'un sélecteur
+fonctionne. Si aucun ne marche, l'application s'arrête <strong>avant</strong> d'envoyer quoi
+que ce soit et te dit lequel réparer.</p>
+<form method="post" action="/reglages/selecteurs" class="carte">
+  <textarea name="contenu" class="grand" style="min-height:340px">{{ selecteurs }}</textarea>
+  <div class="rangee" style="margin-top:10px">
+    <button type="submit">Enregistrer les sélecteurs</button>
+    <button class="doux" type="button"
+      onclick="document.querySelector('[name=contenu]').value = document.getElementById('modele').textContent">Revenir au modèle d'origine</button>
+  </div>
+  <pre id="modele" style="display:none">{{ modele_selecteurs }}</pre>
+</form>
+
+<h2>Machine</h2>
+<div class="carte">
+  <ul class="liste-plate">
+    <li>ffmpeg : <span class="mono">{{ outils.ffmpeg or 'absent' }}</span></li>
+    <li>ffprobe : <span class="mono">{{ outils.ffprobe or 'absent' }}</span></li>
+    <li>Écoute : <span class="mono">{{ infos.hote }}:{{ infos.port }}</span></li>
+    <li>Dossier de données : <span class="mono">{{ infos.donnees }}</span></li>
+    <li>Base : <span class="mono">{{ infos.base }}</span></li>
+    <li>Générations simultanées : <strong>{{ infos.simultanees }}</strong> (volontairement figé)</li>
+    <li>Version : <span class="mono">{{ infos.version }}</span></li>
+  </ul>
+</div>
+
+<h2>Journal général</h2>
+<table>
+{% for j in journal %}
+<tr><td class="mono" style="width:150px">{{ j.horodatage }}</td>
+<td><span class="etiquette {{ 'ko' if j.niveau=='erreur' else ('attente' if j.niveau=='alerte' else 'neutre') }}">{{ j.niveau }}</span></td>
+<td class="mono">{{ j.projet_id or '' }}</td>
+<td>{{ j.message }}</td></tr>
+{% endfor %}
+</table>
+{% endblock %}

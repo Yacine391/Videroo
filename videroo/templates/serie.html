@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block titre %}Prompts en série{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+{% set titres = {'planche':'Prompts de planches', 'image':'Prompts image en série', 'video':'Prompts vidéo en série'} %}
+<h2>{{ titres[genre] }}</h2>
+<p class="sous-titre">Tous les prompts à la suite, prêts à copier un par un. Rien n'est envoyé d'ici : aucune génération, aucun quota.</p>
+<div class="rangee" style="margin-bottom:14px">
+  <a class="bouton doux" href="/projets/{{ p.id }}/serie/planche">Planches</a>
+  <a class="bouton doux" href="/projets/{{ p.id }}/serie/image">Image</a>
+  <a class="bouton doux" href="/projets/{{ p.id }}/serie/video">Vidéo</a>
+  <a class="bouton doux" href="/projets/{{ p.id }}/scenes">Retour aux scènes</a>
+</div>
+{% for e in elements %}
+<div class="carte">
+  <div class="rangee" style="justify-content:space-between">
+    <strong>{{ e.titre }}</strong>
+    {% if e.pret %}<span class="etiquette ok">déjà obtenu</span>{% else %}<span class="etiquette attente">à faire</span>{% endif %}
+  </div>
+  {% if e.fichiers %}<p class="mono">Fichiers à joindre : {{ e.fichiers|join(', ') }}</p>
+  {% elif genre != 'planche' %}<p class="mono">Aucun fichier disponible à joindre pour l'instant.</p>{% endif %}
+  {% if e.duree is defined and genre == 'video' %}<p class="mono">Durée à régler dans Grok : {{ e.duree }} s</p>{% endif %}
+  <div class="copiable">
+    <button class="doux petit" type="button" onclick="copier('serie-{{ loop.index }}', this)">Copier</button>
+    <textarea id="serie-{{ loop.index }}" class="grand" readonly>{{ e.prompt }}</textarea>
+  </div>
+</div>
+{% endfor %}
+{% if not elements %}<p class="vide">Rien à afficher.</p>{% endif %}
+{% endblock %}

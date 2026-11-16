@@ -1,0 +1,624 @@
+{% extends "base.html" %}
+{% block titre %}Atelier{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+
+{% macro bloc(e) %}
+<article class="bloc" data-cle="{{ e.cle }}" data-genre="{{ e.genre }}"
+         data-id="{{ e.id }}" data-fournisseur="{{ e.fournisseur }}"
+         {% if e.genre in ('planche', 'miniature') %}data-depot="{{ e.genre }}:{{ e.id or 0 }}" data-projet="{{ d.projet.id }}"{% endif %}>
+  <header>
+    <span class="source {{ e.fournisseur }}">{{ 'ChatGPT' if e.fournisseur == 'chatgpt' else 'Grok' }}</span>
+    <span class="bloc-titre">{{ e.titre }}</span>
+    <span class="etiquette etat">…</span>
+  </header>
+  <div class="visuel"></div>
+  <p class="motif mono"></p>
+  <div class="actions rangee"></div>
+  {% if e.genre in ('planche', 'miniature') %}<p class="depot-aide">⇩ Glisse ton image ici pour la ranger (aucune génération)</p>{% endif %}
+</article>
+{% endmacro %}
+
+<div class="pilote" id="pilote">
+  <div class="pilote-gauche">
+    <span class="point" id="pilote-point"></span>
+    <div>
+      <div class="pilote-titre" id="pilote-titre">Prêt à lancer</div>
+      <div class="mono" id="pilote-detail">—</div>
+    </div>
+  </div>
+  <div class="pilote-compteurs mono">
+    <div id="pilote-compteurs">—</div>
+    <div id="pilote-navigateur"></div>
+  </div>
+  <div class="rangee">
+    <select id="mode" title="Comment l'application travaille">
+      {% for cle, libelle in modes.items() %}
+      <option value="{{ cle }}" {{ 'selected' if cle == mode_defaut }}>{{ libelle }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" id="btn-lancer">Lancer la génération</button>
+    <button type="button" class="danger" id="btn-arreter" hidden>Arrêter</button>
+    <button type="button" class="doux" id="btn-suivre" hidden>Suivre la génération ↓</button>
+  </div>
+  <!-- Dans le bandeau collant, pas sous lui : un arret qui disparait des qu'on
+       descend dans la page ne sert a rien, c'est justement en regardant les
+       scenes qu'on se demande pourquoi plus rien ne part. -->
+  <!-- Secours manuel : quand Grok ne dit pas clairement qu'il n'a plus de
+       quota, c'est toi qui le vois. Ce bouton ne lance rien, il met juste le
+       compte de cote pour la suite. -->
+  <div class="pilote-comptes mono" id="pilote-comptes"></div>
+  <div class="pilote-blocages" id="pilote-blocages" hidden></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+{% if not navigateur.ecran.installe %}
+<div class="alerte">
+  <strong>Des fenêtres Chrome risquent d'apparaître pendant les générations.</strong>
+  Ta session Ubuntu tourne en Wayland : GNOME y ramène sur l'écran toute fenêtre qu'on
+  essaie de cacher. Pour que Chrome travaille sur un écran à part, invisible, installe
+  Xvfb une seule fois dans un terminal, puis relance Videroo :
+  <span class="mono">{{ navigateur.ecran.commande_installation }}</span>
+</div>
+{% endif %}
+
+<div class="tuyau" id="tuyau">
+  {% for cle, titre, numero, legende in [
+      ('prompts', 'Prompts', '01', 'les scènes de ton pack'),
+      ('chatgpt', 'ChatGPT', '02', 'les planches et les images de départ'),
+      ('grok', 'Grok', '03', 'les vidéos animées'),
+      ('projet', 'Projet', '04', 'ce que tu emportes dans CapCut')] %}
+  <section class="etage" data-etage="{{ cle }}">
+    <header><h3>{{ titre }}</h3><span class="numero">{{ numero }}</span></header>
+    <div class="etage-corps"></div>
+    <footer class="etage-pied mono">{{ legende }}</footer>
+  </section>
+  {% if not loop.last %}<div class="fleche" aria-hidden="true">↓</div>{% endif %}
+  {% endfor %}
+</div>
+
+<p class="sous-titre">L'application descend cette page de haut en bas : d'abord les planches
+dans ChatGPT, puis pour chaque scène son image dans ChatGPT et sa vidéo dans Grok. Une
+génération à la fois, et jamais de relance toute seule — « regénérer » est toujours ton clic.</p>
+
+<h2 class="separateur">Le détail, élément par élément</h2>
+
+<section class="etape">
+  <h2>1 · Les planches de référence — ChatGPT</h2>
+  <p class="sous-titre">Ce sont les vraies images des personnages. Elles sont jointes
+  ensuite à chaque scène, pour que les têtes ne changent pas d'un plan à l'autre.</p>
+  {% if fil.planches %}
+  <div class="grille-planches">
+    {% for e in fil.planches %}{{ bloc(e) }}{% endfor %}
+  </div>
+  {% else %}<p class="vide">Aucun personnage dans ce pack.</p>{% endif %}
+</section>
+
+<section class="etape">
+  <h2>2 · Les scènes — image puis vidéo</h2>
+  {% if fil.scenes %}
+    {% for s in fil.scenes %}
+    <div class="duo" id="scene-{{ s.numero }}">
+      <div class="duo-tete">
+        <span class="num">{{ s.numero }}</span>
+        <strong>{{ s.titre }}</strong>
+        <span class="mono">{{ s.duree }} s{% if s.refs %} · {{ s.refs|join(' ') }}{% endif %}</span>
+        {% if not s.valide %}<span class="etiquette attente">pas encore validée</span>{% endif %}
+      </div>
+      <div class="duo-corps">
+        {{ bloc(s.image) }}
+        {{ bloc(s.video) }}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}<p class="vide">Aucune scène : importe ton pack dans l'onglet Histoire.</p>{% endif %}
+</section>
+
+<section class="etape">
+  <h2>3 · La miniature TikTok</h2>
+  <p class="sous-titre">Générée en dernier, dans la même conversation ChatGPT, avec les
+  planches des personnages jointes pour qu'ils soient identiques. Format 9:16, titre de
+  l'histoire et badge « PARTIE {{ d.projet.grok_episode or 1 }} » incrustés par ChatGPT.</p>
+  <div class="grille-planches">{{ bloc(fil.miniature) }}</div>
+</section>
+
+<section class="etape">
+  <h2>4 · Récupérer les vidéos pour CapCut</h2>
+  <div class="carte">
+    <p class="mono">Les fichiers bruts rendus par Grok, sans ré-encodage : exactement ce
+    que tu déposes dans CapCut. <strong id="compte-videos">{{ fil.videos_pretes }}</strong>
+    vidéo(s) disponible(s) sur {{ fil.scenes|length }} scène(s).</p>
+    <div class="rangee" style="margin-top:10px">
+      <a class="bouton" href="/projets/{{ p.id }}/telecharger/videos">Télécharger toutes les vidéos (.zip)</a>
+    </div>
+    <div class="sep"></div>
+    <div class="grille-liens" id="liens-videos"></div>
+  </div>
+</section>
+
+<section class="etape">
+  <h2>5 · Tout est validé</h2>
+  <p class="sous-titre">Quand les images, les vidéos et la miniature sont là et qu'elles te
+  plaisent, c'est toi qui clôtures l'épisode : rien ne se valide tout seul. Le projet passe
+  en « terminé » et tu reviens à la liste de tes projets, pour enchaîner le suivant.</p>
+  <div class="carte">
+    <p class="mono" id="fin-bilan">—</p>
+    <form method="post" action="/projets/{{ p.id }}/statut" class="rangee" style="margin-top:10px">
+      <input type="hidden" name="statut" value="termine">
+      <input type="hidden" name="retour_vers" value="projets">
+      <button type="submit" id="btn-tout-valide" disabled>Tout est validé — aller aux projets</button>
+    </form>
+  </div>
+</section>
+
+<details class="etape">
+  <summary>Journal — ce que l'application vient de faire</summary>
+  <table id="journal"></table>
+  <p class="mono">Pages détaillées, si tu en as besoin un jour :
+    <a href="/projets/{{ p.id }}/generations">générations avancées</a> ·
+    <a href="/projets/{{ p.id }}/montage">montage</a> ·
+    <a href="/projets/{{ p.id }}/export">export de l'épisode entier</a>.
+    Le montage final, tu le fais dans CapCut : ici, tu récupères les vidéos.</p>
+</details>
+
+<script src="/static/depot.js?v={{ empreinte_style }}"></script>
+<script id="fil-initial" type="application/json">{{ fil|tojson }}</script>
+<script>
+const PROJET = {{ p.id }};
+function mode() { return document.getElementById('mode').value; }
+const LIBELLE_ETAT = {
+  termine: 'terminé', en_cours: 'en cours', en_attente: 'en file',
+  a_verifier: 'à vérifier', echec: 'échec', bloque: 'à toi de jouer', a_faire: 'à faire'
+};
+const COULEUR_ETAT = {
+  termine: 'ok', en_cours: 'info', en_attente: 'info',
+  a_verifier: 'attente', echec: 'ko', bloque: 'attente', a_faire: 'neutre'
+};
+let suivre = true;
+let cleActive = null;
+
+function tous(fil) {
+  const sortie = fil.planches.slice();
+  fil.scenes.forEach(s => { sortie.push(s.image); sortie.push(s.video); });
+  if (fil.miniature) sortie.push(fil.miniature);
+  return sortie;
+}
+
+function visuel(e) {
+  if (e.media) {
+    return e.genre === 'video'
+      ? '<video src="' + e.media + '" controls preload="metadata" playsinline></video>'
+      : '<a href="' + e.media + '" target="_blank"><img src="' + e.media + '" alt=""></a>';
+  }
+  if (e.etat === 'en_cours') return '<div class="patiente"><span class="rotor"></span>génération en cours…</div>';
+  if (e.etat === 'en_attente') return '<div class="patiente">en file d\'attente</div>';
+  return '<div class="patiente vide">' + (e.genre === 'video' ? 'pas encore de vidéo' : 'pas encore d\'image') + '</div>';
+}
+
+// Combien de crans on a déjà remontés dans la conversation, pour chaque carte.
+const rangs = new Map();
+
+function boutons(e) {
+  if (e.etat === 'en_cours' || e.etat === 'en_attente') return '';
+  if (e.etat === 'a_faire') return '<button type="button" data-act="generer">Générer</button>';
+  if (e.etat === 'a_verifier' || e.etat === 'echec') {
+    // « Récupérer » d'abord, et en premier à l'écran : il va LIRE chez le
+    // fournisseur un résultat peut-être déjà produit, sans rien envoyer.
+    // « Réessayer » renvoie un prompt et peut payer deux fois la même image.
+    return '<button type="button" data-act="recuperer">Récupérer le résultat</button>'
+         + ' <button type="button" class="doux" data-act="reessayer" data-tache="'
+         + e.tache_id + '">Réessayer</button>';
+  }
+  if (e.etat === 'termine') {
+    let html = '';
+    // Une conversation sert plusieurs scènes : la dernière image n'est pas
+    // toujours la bonne. Tant que cette carte vient d'une récupération, on
+    // propose de remonter d'un cran — ça ne renvoie rien et ne coûte rien.
+    if (rangs.has(e.cle))
+      html += '<button type="button" data-act="recuperer">Pas la bonne — celle d\'avant</button> ';
+    html += '<button type="button" class="doux" data-act="regenerer">Je n\'aime pas — regénérer</button>';
+    if (e.telechargement) html += ' <a class="bouton doux" href="' + e.telechargement + '">Télécharger</a>';
+    return html;
+  }
+  return '';
+}
+
+function defiler(carte, encoreVoulu) {
+  // Le défilement doux est parfois purement ignoré — onglet en arrière-plan,
+  // animations réduites par le système. On vérifie qu'on est bien arrivé, et
+  // sinon on saute directement, sauf si entre-temps ce n'est plus souhaité.
+  const arrive = () => {
+    const r = carte.getBoundingClientRect();
+    return r.top >= 0 && r.bottom <= window.innerHeight;
+  };
+  if (arrive()) return;
+  try { carte.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { /* vieux navigateur */ }
+  setTimeout(() => {
+    if (encoreVoulu() && !arrive()) carte.scrollIntoView({ block: 'center' });
+  }, 700);
+}
+
+// ---- Le suivi vertical : quatre étages, de ton pack jusqu'à CapCut -------
+const ICONE_IMAGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>';
+const ICONE_LECTURE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 4l13 8-13 8V4z"/></svg>';
+const ICONE_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12.5l5.5 5.5L20 6"/></svg>';
+
+function tuile(e) {
+  const fait = e.etat === 'termine';
+  const corps = (fait && e.media && e.genre !== 'video')
+    ? '<img src="' + e.media + '" alt="">'
+    : (e.genre === 'video' ? ICONE_LECTURE : ICONE_IMAGE);
+  const coche = fait ? '<span class="coche">' + ICONE_OK + '</span>' : '';
+  return '<a class="tuile" href="#" data-vers="' + e.cle + '" data-etat="' + e.etat
+    + '" title="' + e.titre.replace(/"/g, '') + '">' + corps + coche + '</a>';
+}
+
+function barre(faits, total) {
+  const part = total ? Math.round((faits / total) * 100) : 0;
+  return '<div class="barre"><span style="width:' + part + '%"></span></div>';
+}
+
+function peindreTuyau(fil) {
+  const corps = cle => document.querySelector('.etage[data-etage="' + cle + '"] .etage-corps');
+  const pied = cle => document.querySelector('.etage[data-etage="' + cle + '"] .etage-pied');
+  const etage = cle => document.querySelector('.etage[data-etage="' + cle + '"]');
+  const enCours = (fil.actives || []).map(a => a.cle);
+
+  // 01 · Prompts — une ligne par scène, remplie à mesure qu'elle avance.
+  const lignes = fil.scenes.map(s => {
+    const pas = (s.image.etat === 'termine' ? 1 : 0) + (s.video.etat === 'termine' ? 1 : 0);
+    return '<div class="ligne-prompt"><span class="rang">'
+      + String(s.numero).padStart(2, '0') + ' · ' + (s.titre || 'sans titre')
+      + '</span>' + barre(pas, 2) + '</div>';
+  }).join('');
+  corps('prompts').innerHTML = lignes
+    ? '<div class="cadre-prompts">' + lignes + '</div>'
+    : '<p class="vide">Aucune scène : importe ton pack dans l\'onglet Histoire.</p>';
+  pied('prompts').textContent = fil.scenes.length + ' scène(s)';
+
+  // 02 · ChatGPT — les planches, puis les images de départ.
+  const images = fil.planches.concat(fil.scenes.map(s => s.image));
+  const imagesFaites = images.filter(e => e.etat === 'termine').length;
+  corps('chatgpt').innerHTML = '<div class="tuiles">' + images.map(tuile).join('') + '</div>'
+    + barre(imagesFaites, images.length);
+  pied('chatgpt').textContent = imagesFaites + ' image(s) prête(s) sur ' + images.length;
+
+  // 03 · Grok — une tuile par vidéo.
+  const videos = fil.scenes.map(s => s.video);
+  const videosFaites = videos.filter(e => e.etat === 'termine').length;
+  corps('grok').innerHTML = '<div class="tuiles">' + videos.map(tuile).join('') + '</div>'
+    + barre(videosFaites, videos.length);
+  pied('grok').textContent = videos.length
+    ? videosFaites + ' vidéo(s) sur ' + videos.length
+      + (enCours.some(c => c.startsWith('video-')) ? ' · une génération en cours' : '')
+    : 'aucune scène';
+
+  // 04 · Projet — ce qui part dans CapCut.
+  const tout = videos.length > 0 && videosFaites === videos.length;
+  const mini = fil.miniature || null;
+  const vignetteMini = mini
+    ? '<div class="mini-bloc">' + tuile(mini)
+      + '<div class="mono">miniature · ' + (LIBELLE_ETAT[mini.etat] || mini.etat) + '</div></div>'
+    : '';
+  corps('projet').innerHTML = vignetteMini +
+    '<div class="bilan ' + (tout ? 'pret' : '') + '">'
+    + '<div class="bilan-chiffre">' + videosFaites + ' / ' + videos.length + '</div>'
+    + '<div class="mono">' + (tout ? 'toutes les vidéos sont là' : 'vidéos obtenues') + '</div>'
+    + barre(videosFaites, videos.length)
+    + '</div>'
+    + '<div class="rangee" style="margin-top:12px">'
+    + (videosFaites
+        ? '<a class="bouton" href="/projets/' + PROJET + '/telecharger/videos">Télécharger les vidéos (.zip)</a>'
+        : '<span class="mono">Rien à télécharger pour l\'instant.</span>')
+    + (mini && mini.telechargement
+        ? ' <a class="bouton doux" href="' + mini.telechargement + '">Télécharger la miniature</a>'
+        : '')
+    + '</div>';
+  const miniPrete = mini && mini.etat === 'termine';
+  pied('projet').textContent = (tout && miniPrete)
+    ? 'vidéos et miniature prêtes — tu peux passer à CapCut'
+    : (tout ? 'vidéos prêtes, miniature à faire' : 'en attente des vidéos');
+
+  // 5 · La clôture de l'épisode : le bouton ne s'ouvre que si tout est là,
+  // et cliquer reste ton geste — rien ne se valide tout seul.
+  const manque = [];
+  if (images.length - imagesFaites) manque.push((images.length - imagesFaites) + ' image(s)');
+  if (videos.length - videosFaites) manque.push((videos.length - videosFaites) + ' vidéo(s)');
+  if (!miniPrete) manque.push('la miniature');
+  const fini = manque.length === 0 && images.length > 0 && videos.length > 0;
+  const btnFin = document.getElementById('btn-tout-valide');
+  if (btnFin) {
+    btnFin.disabled = !fini;
+    document.getElementById('fin-bilan').textContent = fini
+      ? 'Tout est obtenu : ' + imagesFaites + ' image(s), ' + videosFaites
+        + ' vidéo(s) et la miniature. Il ne manque que ton accord.'
+      : 'Il manque encore ' + manque.join(', ') + " — le bouton s'activera tout seul.";
+  }
+
+  // L'étage où ça se passe est mis en avant.
+  ['prompts', 'chatgpt', 'grok', 'projet'].forEach(c => etage(c).classList.remove('actif'));
+  if (enCours.length) {
+    enCours.forEach(cle => {
+      etage(cle.startsWith('video-') ? 'grok' : 'chatgpt').classList.add('actif');
+    });
+  } else if (tout) {
+    etage('projet').classList.add('actif');
+  }
+}
+
+function peindre(e) {
+  const carte = document.querySelector('[data-cle="' + e.cle + '"]');
+  if (!carte) return;
+  if (carte.dataset.etat !== e.etat) {
+    carte.dataset.etat = e.etat;
+    const badge = carte.querySelector('.etat');
+    badge.textContent = LIBELLE_ETAT[e.etat] || e.etat;
+    badge.className = 'etiquette etat ' + (COULEUR_ETAT[e.etat] || 'neutre');
+    carte.querySelector('.actions').innerHTML = boutons(e);
+  }
+  const media = e.media || '';
+  if (carte.dataset.media !== media || (!media && carte.dataset.vue !== e.etat)) {
+    carte.dataset.media = media;
+    carte.dataset.vue = e.etat;
+    carte.querySelector('.visuel').innerHTML = visuel(e);
+  }
+  const motif = carte.querySelector('.motif');
+  const texte = e.message || '';
+  if (motif.textContent !== texte) { motif.textContent = texte; motif.hidden = !texte; }
+}
+
+function peindreTout(fil) {
+  tous(fil).forEach(peindre);
+  peindreTuyau(fil);
+
+  const point = document.getElementById('pilote-point');
+  const titre = document.getElementById('pilote-titre');
+  const detail = document.getElementById('pilote-detail');
+  const r = fil.production.restants;
+  document.getElementById('pilote-compteurs').textContent =
+    r.planche + ' planche(s) · ' + r.image + ' image(s) · ' + r.video + ' vidéo(s) à faire';
+
+  const actives = fil.actives || [];
+  if (actives.length) {
+    point.className = 'point actif';
+    titre.textContent = actives.map(a => a.libelle).join('  +  ');
+    detail.textContent = actives
+      .map(a => 'chez ' + a.fournisseur + ' depuis ' + (a.lance_le || '').slice(11, 19))
+      .join(' · ') + (actives.length > 1 ? ' — en parallèle' : '');
+  } else if (fil.production.active && fil.production.suivante) {
+    point.className = 'point attente';
+    titre.textContent = 'Chaîne en cours';
+    detail.textContent = 'prochaine étape : ' + fil.production.suivante.libelle;
+  } else if (fil.production.suivante) {
+    point.className = 'point';
+    titre.textContent = 'Prêt à lancer';
+    detail.textContent = 'première étape : ' + fil.production.suivante.libelle;
+  } else if ((fil.production.blocages || []).length) {
+    point.className = 'point';
+    titre.textContent = 'Chaîne arrêtée — elle attend ta décision';
+    detail.textContent = fil.production.blocages
+      .map(b => b.libelle + ' : ' + b.motif).join(' — ');
+  } else {
+    point.className = 'point fini';
+    titre.textContent = 'Rien en attente';
+    detail.textContent = 'tout est obtenu, ou les éléments restants attendent une action de ta part';
+  }
+
+  // Un arret n'est jamais un saut : on nomme l'element qui bloque CHAQUE
+  // fournisseur, pour que la scene suivante ne parte pas sans qu'on sache.
+  const zoneComptes = document.getElementById('pilote-comptes');
+  zoneComptes.innerHTML = Object.values(fil.comptes || {}).map(function(c){
+    if (!c.actif) return '';
+    const bouton = c.secours
+      ? ' <button type="button" class="doux petit" data-site="' + c.site
+        + '">à court → ' + c.suivant + '</button>'
+      : ' <span class="discret">aucun compte de secours</span>';
+    return '<div>' + c.site + ' : <strong>' + c.actif + '</strong>' + bouton + '</div>';
+  }).join('');
+  zoneComptes.querySelectorAll('button[data-site]').forEach(function(b){
+    b.onclick = function(){
+      b.disabled = true;
+      fetch('/local/comptes/' + b.dataset.site + '/a-court?projet={{ d.projet.id }}', {method: 'POST'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){ alert(d.message); rafraichir(); });
+    };
+  });
+
+  const zoneBlocages = document.getElementById('pilote-blocages');
+  const blocages = fil.production.blocages || [];
+  zoneBlocages.hidden = blocages.length === 0;
+  zoneBlocages.innerHTML = blocages
+    .map(b => '<div>⛔ <strong>' + b.libelle + '</strong> (' + b.fournisseur
+      + ') — ' + b.motif + ' La chaîne s\'arrête ici et ne passe pas à la suite.</div>')
+    .join('');
+  const nav = fil.navigateur || {chromes: [], memoire_mo: 0, sur_ton_ecran: []};
+  const ligneNav = document.getElementById('pilote-navigateur');
+  if (!nav.chromes.length) {
+    ligneNav.textContent = 'navigateur fermé';
+    ligneNav.className = '';
+  } else if (nav.sur_ton_ecran.length) {
+    ligneNav.textContent = '⚠ ' + nav.sur_ton_ecran.length
+      + ' fenêtre(s) Chrome sur TON écran · ' + nav.memoire_mo + ' Mo';
+    ligneNav.className = 'alerte-ligne';
+  } else {
+    ligneNav.textContent = nav.chromes.length + ' Chrome sur l\'écran '
+      + (nav.chromes[0].affichage || '?') + ', hors de ton bureau · ' + nav.memoire_mo + ' Mo';
+    ligneNav.className = '';
+  }
+
+  document.getElementById('btn-arreter').hidden = !fil.production.active;
+  document.getElementById('btn-lancer').disabled = actives.length >= 2;
+
+  document.getElementById('compte-videos').textContent = fil.videos_pretes;
+  document.getElementById('liens-videos').innerHTML = fil.scenes
+    .filter(s => s.video.telechargement)
+    .map(s => '<a class="lien-video" href="' + s.video.telechargement + '">Scène '
+      + s.numero + ' — ' + (s.titre || '') + '</a>')
+    .join('') || '<span class="mono">Aucune vidéo pour l\'instant.</span>';
+
+  document.getElementById('journal').innerHTML = fil.journal
+    .map(j => '<tr><td class="mono" style="width:70px">' + j.horodatage
+      + '</td><td>' + j.message + '</td></tr>').join('');
+
+  const cle = actives.length ? actives[actives.length - 1].cle : null;
+  if (!cle) document.getElementById('btn-suivre').hidden = true;
+  const nouveau = cle && cle !== cleActive;
+  cleActive = cle;
+  if (nouveau && suivre) {
+    const carte = document.querySelector('[data-cle="' + cle + '"]');
+    if (carte) defiler(carte, () => suivre && cleActive === cle);
+  }
+}
+
+function dire(message, bon) {
+  const t = document.getElementById('toast');
+  t.textContent = message;
+  t.className = 'toast ' + (bon ? 'ok' : 'ko');
+  t.hidden = false;
+  clearTimeout(t._minuteur);
+  t._minuteur = setTimeout(() => { t.hidden = true; }, 9000);
+}
+
+async function agir(charge) {
+  const reponse = await fetch('/local/projets/' + PROJET + '/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ mode: mode() }, charge))
+  });
+  const bilan = await reponse.json();
+  dire(bilan.message, bilan.ok);
+  await rafraichir();
+}
+
+async function rafraichir() {
+  try {
+    const reponse = await fetch('/local/projets/' + PROJET + '/fil');
+    if (reponse.ok) peindreTout(await reponse.json());
+  } catch (e) { /* le serveur local redémarre peut-être : on réessaiera */ }
+}
+
+document.addEventListener('click', ev => {
+  const tuile = ev.target.closest('.tuile[data-vers]');
+  if (tuile) {
+    ev.preventDefault();
+    const carte = document.querySelector('[data-cle="' + tuile.dataset.vers + '"]');
+    if (carte) {
+      suivre = false;
+      document.getElementById('btn-suivre').hidden = !cleActive;
+      defiler(carte, () => true);
+    }
+    return;
+  }
+  const bouton = ev.target.closest('[data-act]');
+  if (!bouton) return;
+  const carte = bouton.closest('.bloc');
+  const act = bouton.dataset.act;
+  if (act === 'regenerer' && !confirm("Regénérer cet élément ? C'est une nouvelle génération, donc du quota consommé. L'ancien fichier est conservé à côté.")) return;
+  if (act === 'reessayer' && !confirm("Réessayer cet élément ? Un réessai renvoie un prompt et peut consommer du quota. Essaie d'abord « Récupérer le résultat » : il va lire chez le fournisseur sans rien envoyer.")) return;
+  bouton.disabled = true;
+  const cle = carte.dataset.cle;
+  const rang = act === 'recuperer' ? (rangs.get(cle) || 0) + 1 : 1;
+  if (act === 'recuperer') rangs.set(cle, rang);
+  agir({
+    action: act,
+    genre: carte.dataset.genre,
+    cible_id: Number(carte.dataset.id),
+    fournisseur: carte.dataset.fournisseur,
+    tache_id: Number(bouton.dataset.tache || 0),
+    rang: rang
+  }).finally(() => { bouton.disabled = false; });
+});
+
+document.getElementById('btn-lancer').addEventListener('click', ev => {
+  ev.target.disabled = true;
+  suivre = true;
+  document.getElementById('btn-suivre').hidden = true;
+  agir({ action: 'lancer' });
+});
+document.getElementById('btn-arreter').addEventListener('click', () => agir({ action: 'arreter' }));
+document.getElementById('btn-suivre').addEventListener('click', () => {
+  suivre = true;
+  document.getElementById('btn-suivre').hidden = true;
+  const cle = cleActive;
+  const carte = cle && document.querySelector('[data-cle="' + cle + '"]');
+  if (carte) defiler(carte, () => suivre && cleActive === cle);
+});
+
+// Tu reprends la main dès que tu fais défiler toi-même.
+['wheel', 'touchmove', 'keydown'].forEach(type =>
+  window.addEventListener(type, () => {
+    if (!suivre) return;
+    suivre = false;
+    document.getElementById('btn-suivre').hidden = !cleActive;
+  }, { passive: true })
+);
+
+peindreTout(JSON.parse(document.getElementById('fil-initial').textContent));
+
+// On interroge souvent pendant une génération, rarement le reste du temps :
+// inutile de réveiller la machine toutes les 2,5 s quand rien ne bouge.
+let minuteur = null;
+function cadencer() {
+  const vif = Boolean(cleActive);
+  const attente = vif ? 2500 : 8000;
+  clearTimeout(minuteur);
+  minuteur = setTimeout(async () => {
+    if (!document.hidden) await rafraichir();
+    cadencer();
+  }, attente);
+}
+cadencer();
+</script>
+
+<!-- Fin d'episode : soit on monte la video, soit on enchaine sur la partie
+     suivante, dans les MEMES conversations ChatGPT et Grok. -->
+<section class="fin-episode">
+  <h2>Fin de la partie {{ serie.episode }}</h2>
+  <p>
+    {{ serie.videos_pretes }} vidéo(s) prête(s) sur {{ serie.nb_scenes }} scène(s).
+    {% if serie.precedente %}
+      Suite de <a href="/projets/{{ serie.precedente.id }}/atelier">« {{ serie.precedente.titre or serie.precedente.nom }} »</a>
+      (partie {{ serie.precedente.grok_episode or 1 }}).
+    {% endif %}
+  </p>
+  <div class="fin-choix">
+    <a class="bouton" href="/projets/{{ d.projet.id }}/export">Achever : monter la vidéo finale</a>
+    {% if serie.suivante %}
+      <a class="bouton doux" href="/projets/{{ serie.suivante.id }}">Ouvrir la partie {{ serie.suivante.grok_episode }}</a>
+    {% else %}
+      <form method="post" action="/projets/{{ d.projet.id }}/partie-suivante">
+        <button type="submit">Passer à la partie {{ serie.episode + 1 }}</button>
+      </form>
+    {% endif %}
+  </div>
+  <p class="aide">
+    La partie {{ serie.episode + 1 }} reprend ces conversations, où tes personnages ont
+    déjà leur visage :
+    ChatGPT {% if serie.chatgpt_chat_url %}<a class="mono" href="{{ serie.chatgpt_chat_url }}" target="_blank" rel="noopener">{{ serie.chatgpt_chat_url }}</a>{% else %}<em>aucune encore</em>{% endif %},
+    Grok {% if serie.grok_chat_url %}<a class="mono" href="{{ serie.grok_chat_url }}" target="_blank" rel="noopener">{{ serie.grok_chat_url }}</a>{% else %}<em>aucune encore</em>{% endif %}.
+    Sur Grok, sa première scène commencera par « "{{ d.projet.grok_serie }}" - Épisode {{ serie.episode + 1 }} : »,
+    pas par « Nouvelle série ». Rien n'est lancé tant que tu n'as pas collé son pack.
+  </p>
+</section>
+
+<!-- Supprimer un projet detruit des heures de generation et des quotas deja
+     payes. On demande donc le titre exact : un clic de trop ne suffit pas. -->
+<section class="zone-danger">
+  <h2>Supprimer ce projet</h2>
+  <p>
+    Arrête la génération en cours, puis efface <strong>tout</strong> : le scénario,
+    les planches, les images, les vidéos, les tâches et le journal, ainsi que le
+    dossier <span class="mono">{{ d.projet.dossier }}</span>.
+    <strong>C'est définitif, il n'y a pas de corbeille.</strong>
+  </p>
+  <form method="post" action="/projets/{{ d.projet.id }}/supprimer"
+        onsubmit="return confirm('Tout sera effacé, sans retour possible. Continuer ?')">
+    <label for="confirmation">Recopie le titre pour confirmer :
+      <span class="mono">{{ d.projet.titre or d.projet.nom }}</span></label>
+    <input type="text" id="confirmation" name="confirmation" autocomplete="off"
+           placeholder="{{ d.projet.titre or d.projet.nom }}">
+    <button class="danger" type="submit">Arrêter et supprimer définitivement</button>
+  </form>
+</section>
+{% endblock %}

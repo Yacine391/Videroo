@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block titre %}Scènes{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+<div class="rangee" style="margin-bottom:14px">
+  <form method="post" action="/projets/{{ p.id }}/valider"><button type="submit">Valider toutes les scènes possibles</button></form>
+  <a class="bouton doux" href="/projets/{{ p.id }}/serie/image">Prompts image en série</a>
+  <a class="bouton doux" href="/projets/{{ p.id }}/serie/video">Prompts vidéo en série</a>
+  <a class="bouton doux" href="/projets/{{ p.id }}/serie/planche">Prompts de planches</a>
+</div>
+
+<h2>{{ d.scenes|length }} scène(s) — {{ d.duree_totale_pack }} s au total</h2>
+{% if not d.scenes %}<p class="vide">Aucune scène. Importe ton pack dans l'onglet Histoire.</p>{% endif %}
+
+{% for s in d.scenes %}
+<div class="scene" id="scene-{{ s.id }}">
+  <div class="tete">
+    <span class="num">{{ s.numero }}</span>
+    <span>{{ s.emoji }}</span>
+    <strong>{{ s.titre }}</strong>
+    <span class="etiquette {{ 'ok' if s.duree in (6,10,15) else 'ko' }}">{{ s.duree }} s</span>
+    <span class="etiquette neutre">{{ s.version_video or 'version ?' }}</span>
+    <span class="etiquette info">{{ s.nb_repliques }} répl. · {{ s.nb_mots }} mots</span>
+    {% if s.valide %}<span class="etiquette ok">validée</span>{% else %}<span class="etiquette attente">non validée</span>{% endif %}
+    {% if s.image_ok %}<span class="etiquette ok">image</span>{% else %}<span class="etiquette neutre">sans image</span>{% endif %}
+    {% if s.video_ok %}<span class="etiquette ok">vidéo</span>{% else %}<span class="etiquette neutre">sans vidéo</span>{% endif %}
+    {% if s.video_conforme == 0 %}<span class="etiquette ko">durée {{ '%+.1f'|format(s.video_ecart or 0) }} s</span>{% endif %}
+  </div>
+  <div class="corps">
+    {% if s.problemes %}
+    <div class="alerte"><strong>À corriger avant génération :</strong> {{ s.problemes|join(' · ') }}</div>
+    {% endif %}
+
+    <div class="grille deux">
+      <div>
+        <h3>Références à joindre dans ChatGPT</h3>
+        <div class="apercu">
+        {% for r in s.refs %}
+          <div class="vignette">
+            {% if r.ref_ok %}<img src="/media/{{ p.id }}/references/{{ r.ref_path.split('/')[-1] }}" alt="{{ r.code }}">
+            {% else %}<div class="etiquette ko">absente</div>{% endif %}
+            {{ r.code }} {{ r.surnom }}
+          </div>
+        {% endfor %}
+        {% if not s.refs %}<span class="mono">Aucune référence listée par le pack.</span>{% endif %}
+        </div>
+
+        <h3>Image de départ</h3>
+        {% if s.image_ok %}
+          <div class="apercu"><a href="/media/{{ p.id }}/scenes/{{ s.image_path.split('/')[-1] }}" target="_blank">
+            <img src="/media/{{ p.id }}/scenes/{{ s.image_path.split('/')[-1] }}" alt="scène {{ s.numero }}"></a></div>
+          <p class="mono">{{ s.image_path.split('/')[-1] }} · {{ s.image_origine or '' }}</p>
+        {% else %}<p class="mono">Aucune image.</p>{% endif %}
+        <form method="post" action="/projets/{{ p.id }}/importer-media" enctype="multipart/form-data">
+          <input type="hidden" name="cible_type" value="image">
+          <input type="hidden" name="cible_id" value="{{ s.id }}">
+          <input type="hidden" name="retour_vers" value="scenes">
+          <input type="file" name="fichier" accept=".png,.jpg,.jpeg,.webp" required>
+          <div class="rangee" style="margin-top:6px"><button class="doux petit" type="submit">Importer l'image</button></div>
+        </form>
+
+        <h3>Vidéo</h3>
+        {% if s.video_ok %}
+          <div class="apercu"><video src="/media/{{ p.id }}/scenes/{{ s.video_path.split('/')[-1] }}" controls preload="metadata"></video></div>
+          <p class="mono">{{ '%.2f'|format(s.video_duree or 0) }} s · {{ s.video_largeur }}x{{ s.video_hauteur }} ·
+             audio {{ 'oui' if s.video_audio else 'NON' }} · utile {{ '%.2f'|format(s.duree_utile) }} s</p>
+          {% if not s.video_audio %}<div class="alerte">Cette vidéo n'a pas de piste audio : les dialogues Grok sont absents.</div>{% endif %}
+          {% if s.video_conforme == 0 %}
+          <div class="alerte">
+            <strong>Durée non conforme :</strong> {{ '%.2f'|format(s.video_duree) }} s obtenues
+            au lieu de {{ s.duree }} s demandées ({{ '%+.2f'|format(s.video_ecart or 0) }} s).
+            {% if s.duree_utile and (s.duree_utile - s.duree)|abs <= 1.0 %}
+              <br>Les coupes actuelles la ramènent à {{ '%.2f'|format(s.duree_utile) }} s : c'est bon pour l'export.
+            {% else %}
+              <form method="post" action="/projets/{{ p.id }}/scenes/{{ s.id }}/ajuster-duree" style="margin-top:8px">
+                <input type="hidden" name="retour_vers" value="scenes">
+                <button class="petit" type="submit">Ramener à {{ s.duree }} s en coupant la fin</button>
+              </form>
+            {% endif %}
+          </div>
+          {% elif s.video_conforme == 1 %}
+          <div class="note">Durée conforme : {{ '%.2f'|format(s.video_duree) }} s pour {{ s.duree }} s demandées.</div>
+          {% endif %}
+          <div class="rangee">
+            <form method="post" action="/projets/{{ p.id }}/scenes/{{ s.id }}/exporter">
+              <input type="hidden" name="retour_vers" value="scenes">
+              <button class="petit" type="submit">Exporter cette scène en MP4</button>
+            </form>
+            {% if s.export_path %}
+            <a class="bouton doux petit" href="/media/{{ p.id }}/export/scenes/{{ s.export_path.split('/')[-1] }}" download>Télécharger</a>
+            {% endif %}
+          </div>
+          <form method="post" action="/projets/{{ p.id }}/scenes/{{ s.id }}/images-cles" class="rangee">
+            <input type="number" name="nombre" value="6" min="1" max="20" style="width:80px">
+            <button class="doux petit" type="submit">Extraire des images clés</button>
+          </form>
+        {% else %}<p class="mono">Aucune vidéo.</p>{% endif %}
+        <form method="post" action="/projets/{{ p.id }}/importer-media" enctype="multipart/form-data">
+          <input type="hidden" name="cible_type" value="video">
+          <input type="hidden" name="cible_id" value="{{ s.id }}">
+          <input type="hidden" name="retour_vers" value="scenes">
+          <input type="file" name="fichier" accept=".mp4,.mov,.webm,.mkv" required>
+          <div class="rangee" style="margin-top:6px"><button class="doux petit" type="submit">Importer la vidéo</button></div>
+        </form>
+      </div>
+
+      <div>
+        <form method="post" action="/scenes/{{ s.id }}/champs">
+          <div class="grille trois">
+            <div><label>Emoji</label><input type="text" name="emoji" value="{{ s.emoji or '' }}"></div>
+            <div><label>Durée (6, 10 ou 15)</label><input type="number" name="duree" value="{{ s.duree or '' }}"></div>
+            <div><label>Version vidéo</label>
+              <select name="version_video">
+                <option value="normale" {{ 'selected' if s.version_video=='normale' }}>normale</option>
+                <option value="dynamique" {{ 'selected' if s.version_video=='dynamique' }}>dynamique</option>
+              </select></div>
+          </div>
+          <label>Titre</label><input type="text" name="titre" value="{{ s.titre or '' }}">
+          <label>Attache</label><input type="text" name="attache" value="{{ s.attache or '' }}">
+          <label>Références (codes séparés par des virgules)</label>
+          <input type="text" name="refs_codes" value="{{ s.refs_codes|join(', ') }}">
+          <label>Inventaire de l'image de départ</label><textarea name="inventaire">{{ s.inventaire or '' }}</textarea>
+          <label>Ce qui change</label><textarea name="ce_qui_change">{{ s.ce_qui_change or '' }}</textarea>
+
+          <label>Prompt image (ChatGPT)</label>
+          <div class="copiable">
+            <button class="doux petit" type="button" onclick="copier('img-{{ s.id }}', this)">Copier</button>
+            <textarea id="img-{{ s.id }}" name="prompt_image" class="grand">{{ s.prompt_image or '' }}</textarea>
+          </div>
+          <label>Prompt vidéo (Grok)</label>
+          <div class="copiable">
+            <button class="doux petit" type="button" onclick="copier('vid-{{ s.id }}', this)">Copier</button>
+            <textarea id="vid-{{ s.id }}" name="prompt_video" class="grand">{{ s.prompt_video or '' }}</textarea>
+          </div>
+          <div class="grille deux">
+            <div><label>Couper au début (s)</label><input type="text" name="trim_debut" value="{{ s.trim_debut or 0 }}"></div>
+            <div><label>Couper à la fin (s)</label><input type="text" name="trim_fin" value="{{ s.trim_fin or 0 }}"></div>
+          </div>
+          <div class="rangee" style="margin-top:10px"><button type="submit">Enregistrer la scène</button></div>
+        </form>
+
+        {% if s.dialogues %}
+        <details><summary>Dialogues lus par le parseur ({{ s.dialogues|length }})</summary>
+          <ul class="liste-plate">
+          {% for dia in s.dialogues %}
+            <li><strong>{{ dia.numero }}. {{ dia.etiquette }}</strong>
+              {% if dia.indice %}<span class="mono">({{ dia.indice }})</span>{% endif %}<br>{{ dia.texte }}</li>
+          {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+
+        <form method="post" action="/scenes/{{ s.id }}/valider" class="rangee" style="margin-top:8px">
+          <input type="hidden" name="valide" value="{{ 0 if s.valide else 1 }}">
+          <button class="{{ 'doux' if s.valide else '' }}" type="submit">{{ 'Dévalider' if s.valide else 'Valider cette scène' }}</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

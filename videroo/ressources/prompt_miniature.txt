@@ -1,0 +1,21 @@
+Crée une miniature TikTok verticale au format 9:16 pour cette histoire, sans réponse textuelle : génère uniquement l'image.
+
+Titre : « {titre} »
+
+Badge de partie : ajoute, centré juste sous le titre, un badge très visible avec exactement le texte « PARTIE {episode} ».
+
+- Personnages : montre les personnages principaux de l'histoire (ceux des images jointes ou de cette conversation, parfaitement identiques : même espèce, mêmes couleurs, même coiffure, mêmes vêtements, mêmes signes distinctifs), dans le moment le plus intrigant de l'histoire, avec des expressions fortes et très lisibles (choc, colère, peur, larmes, surprise).
+
+- Style : animation 3D semi-réaliste haut de gamme, très aguicheur : contraste élevé, couleurs saturées, éclairage dramatique, fond simple et un peu flou pour faire ressortir les personnages, composition lisible même en tout petit.
+
+- Un objet clé de l'histoire bien visible près des personnages, s'il aide à comprendre l'enjeu.
+
+- Composition entièrement centrée horizontalement : personnages, objet clé, titre et badge sont alignés sur l'axe vertical du milieu de l'image.
+
+- Zones mortes (cachées par l'interface TikTok) : les 10 % du haut et les 25 % du bas de l'image ne contiennent que du décor, jamais un visage, un texte ou un élément important.
+
+- Place les visages et l'objet clé un peu au-dessus du centre, entre 12 % et 48 % de la hauteur de l'image.
+
+- Écris le titre exactement ainsi, en très gros caractères blancs épais avec un contour noir, parfaitement lisibles et sans aucune faute d'orthographe : « {titre} ». Centre-le horizontalement, juste sous le milieu de l'image (entre 48 % et 64 % de la hauteur), sur deux ou trois lignes maximum, sans cacher les visages.
+
+- Aucun autre texte que le titre et le badge : pas de logo, pas de filigrane, pas de sous-titre.

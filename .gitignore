@@ -1,0 +1,13 @@
+# Environnement Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Données locales : base, profils Chrome (tes connexions), médias, journaux.
+# Rien de tout ça ne doit quitter la machine.
+donnees/
+
+# Secrets éventuels
+.env
+.env.*

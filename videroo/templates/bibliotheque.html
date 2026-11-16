@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block titre %}Bibliothèque{% endblock %}
+{% block corps %}
+<h1>Bibliothèque de vidéos de référence</h1>
+<p class="sous-titre">Ces liens servent à analyser une structure narrative pour concevoir tes propres histoires.
+Les indicateurs sont ceux que tu relèves toi-même : l'application ne les récupère pas automatiquement.</p>
+
+<form method="post" action="/bibliotheque/ajouter" class="carte">
+  <div class="grille deux">
+    <div><label>Adresse de la vidéo</label><input type="url" name="url" required placeholder="https://..."></div>
+    <div><label>Titre</label><input type="text" name="titre"></div>
+  </div>
+  <label>Indicateurs publics relevés (vues, likes, date…)</label><input type="text" name="indicateurs">
+  <label>Notes — structure narrative, hook, retournement, fin</label><textarea name="notes"></textarea>
+  <div class="rangee" style="margin-top:10px"><button type="submit">Ajouter</button></div>
+</form>
+
+{% if references %}
+{% for r in references %}
+<div class="carte">
+  <div class="rangee" style="justify-content:space-between">
+    <div><strong>{{ r.titre or 'Sans titre' }}</strong><br><a href="{{ r.url }}" target="_blank" rel="noreferrer" class="mono">{{ r.url }}</a></div>
+    <form method="post" action="/bibliotheque/{{ r.id }}/supprimer"><button class="doux petit" type="submit">Supprimer</button></form>
+  </div>
+  {% if r.indicateurs %}<p class="mono">{{ r.indicateurs }}</p>{% endif %}
+  {% if r.notes %}<p>{{ r.notes }}</p>{% endif %}
+  <p class="mono">ajouté le {{ r.ajoute_le }}</p>
+</div>
+{% endfor %}
+{% else %}<p class="vide">Aucune référence enregistrée.</p>{% endif %}
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block titre %}Métaprompts{% endblock %}
+{% block corps %}
+<h1>Métaprompts</h1>
+<p class="sous-titre">Un métaprompt par type d'histoire. L'application les conserve tels quels, sans jamais
+les réécrire, et affiche leur empreinte pour que tu puisses vérifier qu'ils n'ont pas bougé. Le type se
+choisit à la création du projet : c'est lui qui décide du métaprompt à copier et du lecteur de pack.</p>
+
+<div class="rangee" style="margin-bottom:14px">
+  {% for m in metas %}
+  <button type="button" class="doux onglet-meta{{ ' actif' if loop.first }}"
+          data-type="{{ m.type_histoire }}">{{ m.libelle }}</button>
+  {% endfor %}
+</div>
+
+{% for m in metas %}
+<section class="bloc-meta" data-type="{{ m.type_histoire }}" {{ '' if loop.first else 'hidden' }}>
+  <h2>{{ m.libelle }}</h2>
+  {% if m.present %}
+  <div class="note">
+    <strong>{{ m.taille }} caractères</strong>, empreinte <span class="mono">{{ m.empreinte }}</span>,
+    source : <strong>{{ m.origine }}</strong>{% if m.type_detecte %}, type détecté :
+    <strong>{{ m.type_detecte }}</strong>{% endif %}.
+  </div>
+  <div class="carte copiable">
+    <button class="doux petit" type="button" onclick="copier('meta_{{ m.type_histoire }}', this)">Copier le métaprompt</button>
+    <textarea id="meta_{{ m.type_histoire }}" class="grand" readonly>{{ m.texte }}</textarea>
+  </div>
+  {% else %}
+  <div class="alerte">Aucun métaprompt enregistré pour ce type.</div>
+  {% endif %}
+
+  <h3>{{ 'Remplacer' if m.present else 'Enregistrer' }} le métaprompt « {{ m.libelle }} »</h3>
+  <form method="post" action="/metaprompt" enctype="multipart/form-data" class="carte">
+    <input type="hidden" name="type_histoire" value="{{ m.type_histoire }}">
+    <label>Coller le texte</label>
+    <textarea name="texte" class="grand" placeholder="METAPROMPT — ..."></textarea>
+    <label>…ou importer un fichier</label>
+    <input type="file" name="fichier" accept=".md,.txt,.markdown">
+    <div class="rangee" style="margin-top:10px"><button type="submit">Conserver tel quel</button></div>
+  </form>
+</section>
+{% endfor %}
+
+<h2>Comment on s'en sert</h2>
+<div class="carte">
+  <ol>
+    <li>Crée un projet et choisis son <strong>type d'histoire</strong>.</li>
+    <li>Copie ci-dessus le métaprompt de ce type dans un nouveau chat ChatGPT.</li>
+    <li>Réponds à sa question d'ouverture et choisis ton histoire.
+        <strong>Attends ton choix</strong> : rien n'est généré avant.</li>
+    <li>Colle le pack complet dans l'onglet Histoire du projet.</li>
+  </ol>
+  <p class="mono">Les trois types suivent ensuite exactement la même chaîne : planches de référence,
+  puis pour chaque scène son image dans ChatGPT et sa vidéo dans Grok, puis la miniature.</p>
+  {% if projets %}
+  <p class="mono">Projets prêts à recevoir un pack :
+    {% for p in projets %}<a href="/projets/{{ p.id }}/histoire">{{ p.titre or p.nom }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+</div>
+
+<script>
+document.querySelectorAll('.onglet-meta').forEach(bouton => {
+  bouton.addEventListener('click', () => {
+    const vise = bouton.dataset.type;
+    document.querySelectorAll('.onglet-meta').forEach(b => b.classList.toggle('actif', b === bouton));
+    document.querySelectorAll('.bloc-meta').forEach(s => { s.hidden = s.dataset.type !== vise; });
+  });
+});
+</script>
+{% endblock %}

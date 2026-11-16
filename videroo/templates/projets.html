@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block titre %}Projets{% endblock %}
+{% block corps %}
+<h1>Projets</h1>
+<p class="sous-titre">Crée un projet, colle le pack produit par ton métaprompt V6, puis avance scène par scène.</p>
+
+<div class="grille deux">
+  <div class="carte">
+    <h3 style="margin-top:0">Nouveau projet</h3>
+    {% for p, serie in series_de.items() if serie %}
+    <form method="post" action="/projets/nouveau" style="margin-bottom:14px">
+      <input type="hidden" name="comptes_de" value="{{ p }}">
+      <button type="submit" style="width:100%">Nouvel épisode « {{ serie.nom }} » — épisode {{ (serie.episode or 0) + 1 }} (comptes de {{ p }})</button>
+      <p class="mono" style="margin:6px 0 0">Tout est déjà réglé : chat ChatGPT, chat Grok, planches dans le chat, série et numéro.</p>
+    </form>
+    {% endfor %}
+    <form method="post" action="/projets/nouveau">
+      <label for="nom">Nom du projet (sert au dossier et à la série Grok)</label>
+      <input type="text" id="nom" name="nom" placeholder="Ex. La Clé du Gymnase" required>
+      <label for="type_histoire" style="margin-top:12px">Type d'histoire (choisit le métaprompt à utiliser)</label>
+      <select id="type_histoire" name="type_histoire">
+        {% for cle, libelle in types_projet.items() %}
+        <option value="{{ cle }}" {{ 'selected' if cle == type_defaut }}>{{ libelle }}</option>
+        {% endfor %}
+      </select>
+      <label for="comptes_de" style="margin-top:12px">Comptes ChatGPT et Grok à utiliser</label>
+      <select id="comptes_de" name="comptes_de">
+        <option value="">Rotation (mes comptes)</option>
+        {% for p in proprietaires %}<option value="{{ p }}">Comptes de {{ p }}</option>{% endfor %}
+      </select>
+      <p class="mono" style="margin:6px 0 0">Comptes d'une autre personne : série, chat ChatGPT, planches
+        et format sont repris de son dernier projet, épisode suivant. Les deux ne se mélangent jamais : un projet de la rotation
+        ne touche pas aux comptes d'une autre personne, et inversement.</p>
+      <details style="margin-top:12px">
+        <summary>Série déjà commencée avant Videroo : choisir ses chats</summary>
+        <label for="chat_chatgpt" style="margin-top:8px">Chat ChatGPT de la série (adresse https://chatgpt.com/c/…)</label>
+        <input type="url" id="chat_chatgpt" name="chat_chatgpt" placeholder="https://chatgpt.com/c/...">
+        <label for="episode" style="margin-top:8px">Numéro de l'épisode à produire</label>
+        <input type="number" id="episode" name="episode" min="1" value="1">
+        <label style="margin-top:8px"><input type="checkbox" name="refs_dans_chat" value="1">
+          Les planches de référence sont déjà dans ce chat ChatGPT (ne pas les rejoindre aux images)</label>
+        <p class="mono" style="margin:6px 0 0">Les chats doivent appartenir aux comptes choisis ci-dessus.
+          Modifiable plus tard dans l'onglet Générations.</p>
+      </details>
+      <div class="rangee" style="margin-top:12px"><button type="submit">Créer le projet</button></div>
+    </form>
+    <form method="post" action="/admin/comptes/ajouter" style="margin-top:14px">
+      <label for="nouveau_libelle">Ajouter un compte</label>
+      <div class="rangee">
+        <select name="site" aria-label="Service">
+          <option value="chatgpt">ChatGPT</option>
+          <option value="grok">Grok</option>
+        </select>
+        <input type="text" id="nouveau_libelle" name="libelle" placeholder="Nom du compte" required>
+        <input type="text" name="proprietaire" placeholder="À qui ? (vide = moi, rotation)" list="liste-proprietaires">
+        <datalist id="liste-proprietaires">{% for p in proprietaires %}<option value="{{ p }}">{% endfor %}</datalist>
+        <button class="doux" type="submit">Ajouter</button>
+      </div>
+    </form>
+  </div>
+  <div class="carte">
+    <h3 style="margin-top:0">État de la machine</h3>
+    <ul class="liste-plate">
+      <li>ffmpeg : {% if outils.ffmpeg %}<span class="etiquette ok">{{ outils.ffmpeg }}</span>{% else %}<span class="etiquette ko">absent — sudo apt install ffmpeg</span>{% endif %}</li>
+      <li>ffprobe : {% if outils.ffprobe %}<span class="etiquette ok">présent</span>{% else %}<span class="etiquette ko">absent</span>{% endif %}</li>
+      <li>Navigateur piloté : {% if navigateur.playwright %}<span class="etiquette ok">Playwright prêt</span>{% else %}<span class="etiquette ko">{{ navigateur.message }}</span>{% endif %}
+        {% if navigateur.ouvert %}<span class="etiquette info">ouvert</span>{% endif %}</li>
+      <li>Génération active : {% if tache_active %}<span class="etiquette attente">{{ tache_active.libelle }}</span>{% else %}<span class="etiquette neutre">aucune</span>{% endif %}</li>
+    </ul>
+    <form method="post" action="/navigateur/ouvrir" class="rangee">
+      <input type="hidden" name="retour_vers" value="/">
+      <button type="submit" class="doux petit">Ouvrir le navigateur dédié</button>
+    </form>
+    <p class="mono">Connecte-toi manuellement à ChatGPT et Grok une seule fois dans ce profil.</p>
+  </div>
+</div>
+
+<h2>En cours</h2>
+{% if projets %}
+<table>
+<tr><th>Projet</th><th>Statut</th><th>Scènes</th><th>Images</th><th>Vidéos</th><th>Modifié</th><th></th></tr>
+{% for p in projets %}
+<tr>
+  <td><a href="/projets/{{ p.id }}/histoire"><strong>{{ p.titre or p.nom }}</strong></a>
+      <div class="mono">{{ types_projet.get(p.type_histoire, types_projet[type_defaut]) }}{% if p.moteur or p.univers %} · {{ p.moteur or '' }} {{ p.univers or '' }}{% endif %}</div></td>
+  <td><span class="etiquette {{ 'ok' if p.statut in ('valide','en_cours','termine') else ('attente' if p.statut in ('brouillon','pause') else 'ko') }}">{{ p.statut.replace('_',' ') }}</span></td>
+  <td>{{ p.nb_scenes }}</td>
+  <td>{{ p.nb_images }}/{{ p.nb_scenes }}</td>
+  <td>{{ p.nb_videos }}/{{ p.nb_scenes }}</td>
+  <td class="mono">{{ p.maj_le }}</td>
+  <td><form method="post" action="/projets/{{ p.id }}/archiver">
+      <input type="hidden" name="archive" value="1">
+      <button class="doux petit" type="submit">Archiver</button></form></td>
+</tr>
+{% endfor %}
+</table>
+{% else %}<p class="vide">Aucun projet pour l'instant.</p>{% endif %}
+
+{% if archives %}
+<h2>Archivés</h2>
+<table>
+{% for p in archives %}
+<tr><td><a href="/projets/{{ p.id }}/histoire">{{ p.titre or p.nom }}</a></td>
+<td>{{ p.nb_videos }}/{{ p.nb_scenes }} vidéos</td>
+<td><form method="post" action="/projets/{{ p.id }}/archiver">
+  <input type="hidden" name="archive" value="0">
+  <button class="doux petit" type="submit">Reprendre</button></form></td></tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endblock %}

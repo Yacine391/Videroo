@@ -1,0 +1,325 @@
+{% extends "base.html" %}
+{% block titre %}Générations{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+
+<div class="carte" style="border-color:#3b7ddd">
+  <h3 style="margin-top:0">Production complète</h3>
+  <p class="mono">Un seul bouton : l'application fait les planches dans ChatGPT, puis pour
+  chaque scène l'image de départ dans ChatGPT et la vidéo dans Grok — dans l'ordre, une
+  génération à la fois. Quand un élément n'aboutit pas, elle reste dessus : elle ne saute
+  jamais à la scène suivante. Elle ne réessaie d'elle-même que si rien n'est parti chez le
+  fournisseur — trois fois au plus. Dès qu'un quota a pu être dépensé, elle s'arrête et te
+  dit quoi faire.</p>
+
+  <div class="grille trois" style="margin:12px 0">
+    <div class="carte" style="margin:0"><div class="chiffre">{{ production.restants.planche }}</div><div class="libelle">planche(s) à faire</div></div>
+    <div class="carte" style="margin:0"><div class="chiffre">{{ production.restants.image }}</div><div class="libelle">image(s) à faire</div></div>
+    <div class="carte" style="margin:0"><div class="chiffre">{{ production.restants.video }}</div><div class="libelle">vidéo(s) à faire</div></div>
+  </div>
+
+  {% for b in production.blocages %}
+    <div class="alerte"><strong>Chaîne arrêtée sur {{ b.libelle }}</strong>
+      <span class="etiquette info">{{ b.fournisseur }}</span><br>
+      {{ b.motif }} Elle ne passe pas à l'élément suivant : tant que celui-ci n'est pas
+      réglé, aucune autre génération {{ b.fournisseur }} ne part.</div>
+  {% endfor %}
+  {% if production.suivante %}
+    <div class="note"><strong>Prochaine étape :</strong> {{ production.suivante.libelle }}
+      <span class="etiquette info">{{ production.suivante.fournisseur }}</span></div>
+  {% else %}
+    <div class="note">Rien à produire automatiquement : tout est obtenu, ou les éléments
+    restants attendent une action de ta part (voir le tableau plus bas).</div>
+  {% endif %}
+
+  {% if production.active %}
+    <div class="rangee">
+      <span class="etiquette ok">chaîne en cours</span>
+      <span class="mono">mode {{ production.mode }}</span>
+      <form method="post" action="/projets/{{ p.id }}/production/arreter">
+        <button class="danger" type="submit">Arrêter la chaîne</button></form>
+    </div>
+  {% else %}
+    <form method="post" action="/projets/{{ p.id }}/production" class="rangee">
+      <select name="mode" style="width:auto">
+        <option value="auto" {{ 'selected' if mode_defaut == 'auto' }}>auto — l'application pilote ChatGPT et Grok</option>
+        <option value="assiste" {{ 'selected' if mode_defaut == 'assiste' }}>assisté — elle prépare, tu lances et tu importes</option>
+      </select>
+      <button type="submit" {{ 'disabled' if not production.suivante }}>Lancer la production complète</button>
+    </form>
+    <p class="mono">En mode auto, la fenêtre du navigateur dédié s'ouvre : connecte-toi une
+    fois à ChatGPT et à Grok, puis relance. En mode assisté, la chaîne avance à chaque fois
+    que tu importes un résultat.</p>
+  {% endif %}
+</div>
+
+<div class="carte">
+  <h3 style="margin-top:0">Pilotage</h3>
+  <div class="rangee">
+    <form method="post" action="/projets/{{ p.id }}/statut"><input type="hidden" name="statut" value="pause"><button class="doux" type="submit">Pause</button></form>
+    <form method="post" action="/projets/{{ p.id }}/statut"><input type="hidden" name="statut" value="en_cours"><button class="doux" type="submit">Reprendre</button></form>
+    <form method="post" action="/projets/{{ p.id }}/statut"><input type="hidden" name="statut" value="arrete"><button class="danger" type="submit">Arrêter</button></form>
+    <form method="post" action="/navigateur/ouvrir"><input type="hidden" name="retour_vers" value="/projets/{{ p.id }}/generations"><button class="doux" type="submit">Ouvrir le navigateur dédié</button></form>
+    <form method="post" action="/navigateur/fermer"><input type="hidden" name="retour_vers" value="/projets/{{ p.id }}/generations"><button class="doux" type="submit">Fermer</button></form>
+  </div>
+  <p class="mono" style="margin-top:10px">
+    Statut : <strong>{{ p.statut }}</strong> ·
+    Navigateur : {{ 'ouvert' if navigateur.ouvert else 'fermé' }} ·
+    Profil : {{ navigateur.profil }}<br>
+    Arrêter empêche les prochaines tâches sans effacer un seul résultat déjà obtenu.
+  </p>
+  {% if d.tache_active %}
+  <div class="note"><strong>Génération en cours :</strong> {{ d.tache_active.libelle }}
+    ({{ d.tache_active.fournisseur }}/{{ d.tache_active.mode }}, lancée {{ d.tache_active.lance_le }}).
+    Une seule génération tourne à la fois.</div>
+  {% endif %}
+</div>
+
+<div class="grille deux">
+  <div class="carte">
+    <h3 style="margin-top:0">Lancer un lot (une seule génération par élément)</h3>
+    <p class="mono">Chaque élément validé n'obtient qu'une génération automatique. Les éléments déjà obtenus
+    ou déjà tentés sont refusés avec leur motif, sans rien relancer.</p>
+    {% for genre, libelle, fournisseur in [('planche','Toutes les planches manquantes','chatgpt'),('image','Toutes les images de scènes','chatgpt'),('video','Toutes les vidéos de scènes','grok')] %}
+    <form method="post" action="/projets/{{ p.id }}/generer-lot" class="rangee" style="margin-bottom:8px">
+      <input type="hidden" name="genre" value="{{ genre }}">
+      <input type="hidden" name="fournisseur" value="{{ fournisseur }}">
+      <select name="mode" style="width:auto">
+        {% for cle in modes %}<option value="{{ cle }}" {{ 'selected' if cle == mode_defaut }}>{{ cle }}</option>{% endfor %}
+      </select>
+      <button type="submit">{{ libelle }}</button>
+      <span class="mono">via {{ fournisseur }}</span>
+    </form>
+    {% endfor %}
+    <details><summary>Que font les trois modes ?</summary>
+      <ul class="liste-plate">{% for cle, libelle in modes.items() %}<li><strong>{{ cle }}</strong> — {{ libelle }}</li>{% endfor %}</ul>
+    </details>
+  </div>
+
+  <div class="carte">
+    <h3 style="margin-top:0">Conversations de cette histoire</h3>
+    <p class="mono">Toutes les planches et toutes les images d'une histoire sortent de la
+    <strong>même</strong> conversation ChatGPT. L'adresse est mémorisée à la première
+    génération. Une nouvelle histoire repart d'un chat neuf.</p>
+    <ul class="liste-plate">
+      <li><strong>ChatGPT</strong> —
+        {% if p.chatgpt_chat_url %}
+          <a href="{{ p.chatgpt_chat_url }}" target="_blank" class="mono">{{ p.chatgpt_chat_url }}</a>
+        {% else %}
+          <span class="etiquette attente">pas encore ouverte</span>
+          <span class="mono">la première génération créera le chat</span>
+        {% endif %}
+        <form method="post" action="/projets/{{ p.id }}/nouveau-chat" style="margin-top:6px"
+              onsubmit="return confirm('Repartir d un nouveau chat ChatGPT pour cette histoire ?');">
+          <input type="hidden" name="fournisseur" value="chatgpt">
+          <button class="doux petit" type="submit">Nouveau chat ChatGPT</button></form>
+      </li>
+      <li><strong>Grok</strong> —
+        {% if p.grok_chat_url %}
+          <a href="{{ p.grok_chat_url }}" target="_blank" class="mono">{{ p.grok_chat_url }}</a>
+        {% else %}
+          <span class="etiquette attente">pas encore ouverte</span>
+        {% endif %}
+        <div class="mono">Ta méthode garde un seul chat Grok pour toutes les histoires,
+        avec les règles installées une fois : renseigne alors son adresse dans
+        Admin → Réglages → « Adresse de Grok ».</div>
+        <form method="post" action="/projets/{{ p.id }}/nouveau-chat" style="margin-top:6px"
+              onsubmit="return confirm('Repartir d un nouveau chat Grok ? Les règles devront y être réinstallées.');">
+          <input type="hidden" name="fournisseur" value="grok">
+          <button class="doux petit" type="submit">Nouveau chat Grok</button></form>
+      </li>
+    </ul>
+  </div>
+
+  <div class="carte">
+    <h3 style="margin-top:0">Méthode Grok (chat de règles)</h3>
+    <p class="mono">Ta méthode : un chat dédié où le prompt de règles est installé une seule fois, puis
+    « Nouvelle série "nom" : prompt + image » pour la première scène d'une série.</p>
+    <form method="post" action="/projets/{{ p.id }}/entete">
+      <input type="hidden" name="retour_vers" value="generations">
+      <div class="grille deux">
+        <div><label>Série Grok</label><input type="text" name="grok_serie" value="{{ p.grok_serie or '' }}"></div>
+        <div><label>Épisode</label><input type="number" name="grok_episode" value="{{ p.grok_episode or 1 }}"></div>
+      </div>
+      <label>URL du chat Grok dédié</label>
+      <input type="url" name="grok_chat_url" value="{{ p.grok_chat_url or '' }}" placeholder="https://grok.com/chat/...">
+      <label>URL du chat ChatGPT (optionnel)</label>
+      <input type="url" name="chatgpt_chat_url" value="{{ p.chatgpt_chat_url or '' }}">
+      <label>Planches de référence déjà dans ce chat ChatGPT</label>
+      <select name="refs_dans_chat">
+        <option value="0" {{ 'selected' if not p.refs_dans_chat }}>non : les joindre à chaque image</option>
+        <option value="1" {{ 'selected' if p.refs_dans_chat }}>oui : ne pas les rejoindre (il faut l'URL ci-dessus)</option>
+      </select>
+      <div class="grille deux">
+        <div><label>Règles installées</label>
+          <select name="grok_regles_installees">
+            <option value="0" {{ 'selected' if not p.grok_regles_installees }}>non</option>
+            <option value="1" {{ 'selected' if p.grok_regles_installees }}>oui</option>
+          </select></div>
+        <div><label>Série déjà annoncée</label>
+          <select name="grok_serie_annoncee">
+            <option value="0" {{ 'selected' if not p.grok_serie_annoncee }}>non</option>
+            <option value="1" {{ 'selected' if p.grok_serie_annoncee }}>oui</option>
+          </select></div>
+      </div>
+      <div class="rangee" style="margin-top:10px"><button type="submit">Enregistrer</button></div>
+    </form>
+    <div class="sep"></div>
+    <div class="copiable">
+      <button class="doux petit" type="button" onclick="copier('regles_grok', this)">Copier le prompt de règles</button>
+      <textarea id="regles_grok" class="grand" readonly>{{ regles_grok }}</textarea>
+    </div>
+  </div>
+</div>
+
+<h2>Suivi des éléments</h2>
+<p class="sous-titre">Pour un essai prudent : choisis <strong>auto</strong> sur une seule
+ligne et clique son bouton. Une seule génération part, et tu vois tout de suite si
+l'automatisation du site fonctionne. Le lot et la production complète attendront.</p>
+<table>
+<tr><th>Élément</th><th>État</th><th>Fichier</th><th>Actions</th></tr>
+{% for perso in d.personnages %}
+<tr>
+  <td><strong>{{ perso.code }} {{ perso.surnom }}</strong><div class="mono">planche</div></td>
+  <td>{% if perso.ref_ok %}<span class="etiquette ok">terminé</span>{% else %}<span class="etiquette attente">à faire</span>{% endif %}</td>
+  <td class="mono">{{ perso.ref_path.split('/')[-1] if perso.ref_path else '—' }}</td>
+  <td>
+    <div class="rangee">
+    {% if not perso.ref_ok %}
+      <form method="post" action="/projets/{{ p.id }}/generer" class="rangee">
+        <input type="hidden" name="cible_type" value="planche"><input type="hidden" name="cible_id" value="{{ perso.id }}">
+        <input type="hidden" name="fournisseur" value="chatgpt">
+        <input type="hidden" name="origine" value="auto">
+        <select name="mode" style="width:auto">
+          {% for cle in modes %}<option value="{{ cle }}" {{ 'selected' if cle == mode_defaut }}>{{ cle }}</option>{% endfor %}
+        </select>
+        <button class="petit" type="submit">Générer</button></form>
+    {% else %}
+      <form method="post" action="/projets/{{ p.id }}/regenerer" onsubmit="return confirm('Régénérer cette planche ? Cela consomme un quota. L ancien fichier sera conservé à côté.');">
+        <input type="hidden" name="cible_type" value="planche"><input type="hidden" name="cible_id" value="{{ perso.id }}">
+        <input type="hidden" name="fournisseur" value="chatgpt"><input type="hidden" name="mode" value="{{ mode_defaut }}">
+        <button class="danger petit" type="submit">Régénérer (explicite)</button></form>
+    {% endif %}
+    </div>
+    <form method="post" action="/projets/{{ p.id }}/importer-media" enctype="multipart/form-data" style="margin-top:6px">
+      <input type="hidden" name="cible_type" value="planche"><input type="hidden" name="cible_id" value="{{ perso.id }}">
+      <input type="hidden" name="retour_vers" value="generations">
+      <div class="rangee"><input type="file" name="fichier" accept=".png,.jpg,.jpeg,.webp" required style="width:200px">
+      <button class="doux petit" type="submit">Importer le résultat</button></div>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+
+{% for s in d.scenes %}
+<tr>
+  <td><strong>Scène {{ s.numero }}</strong> — {{ s.titre }}<div class="mono">{{ s.duree }} s · {{ s.refs_codes|join(' ') }}</div></td>
+  <td class="pile">
+    {% if s.image_ok %}<span class="etiquette ok">image</span>{% elif s.valide %}<span class="etiquette attente">image à faire</span>{% else %}<span class="etiquette ko">non validée</span>{% endif %}
+    {% if s.video_ok %}<span class="etiquette ok">vidéo</span>{% elif s.image_ok %}<span class="etiquette attente">vidéo à faire</span>{% else %}<span class="etiquette neutre">vidéo bloquée</span>{% endif %}
+  </td>
+  <td class="mono">
+    {{ s.image_path.split('/')[-1] if s.image_path else '—' }}<br>
+    {{ s.video_path.split('/')[-1] if s.video_path else '—' }}
+  </td>
+  <td>
+    <div class="rangee">
+    {% if not s.image_ok %}
+      <form method="post" action="/projets/{{ p.id }}/generer" class="rangee">
+        <input type="hidden" name="cible_type" value="image"><input type="hidden" name="cible_id" value="{{ s.id }}">
+        <input type="hidden" name="fournisseur" value="chatgpt">
+        <input type="hidden" name="origine" value="auto">
+        <select name="mode" style="width:auto">
+          {% for cle in modes %}<option value="{{ cle }}" {{ 'selected' if cle == mode_defaut }}>{{ cle }}</option>{% endfor %}
+        </select>
+        <button class="petit" type="submit">Image</button></form>
+    {% endif %}
+    {% if s.image_ok and not s.video_ok %}
+      <form method="post" action="/projets/{{ p.id }}/generer" class="rangee">
+        <input type="hidden" name="cible_type" value="video"><input type="hidden" name="cible_id" value="{{ s.id }}">
+        <input type="hidden" name="fournisseur" value="grok">
+        <input type="hidden" name="origine" value="auto">
+        <select name="mode" style="width:auto">
+          {% for cle in modes %}<option value="{{ cle }}" {{ 'selected' if cle == mode_defaut }}>{{ cle }}</option>{% endfor %}
+        </select>
+        <button class="petit" type="submit">Vidéo</button></form>
+    {% endif %}
+    {% if s.video_ok %}
+      <form method="post" action="/projets/{{ p.id }}/regenerer" onsubmit="return confirm('Régénérer cette vidéo ? Cela consomme un quota Grok.');">
+        <input type="hidden" name="cible_type" value="video"><input type="hidden" name="cible_id" value="{{ s.id }}">
+        <input type="hidden" name="fournisseur" value="grok"><input type="hidden" name="mode" value="{{ mode_defaut }}">
+        <button class="danger petit" type="submit">Régénérer la vidéo</button></form>
+    {% endif %}
+    </div>
+    <form method="post" action="/projets/{{ p.id }}/importer-media" enctype="multipart/form-data" style="margin-top:6px">
+      <input type="hidden" name="retour_vers" value="generations">
+      <div class="rangee">
+        <select name="cible_type" style="width:auto"><option value="image">image</option><option value="video">vidéo</option></select>
+        <input type="hidden" name="cible_id" value="{{ s.id }}">
+        <input type="file" name="fichier" required style="width:190px">
+        <button class="doux petit" type="submit">Importer</button>
+      </div>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+
+<tr>
+  <td><strong>Miniature</strong><div class="mono">ChatGPT</div></td>
+  <td>{% if d.miniature_ok %}<span class="etiquette ok">terminée</span>{% else %}<span class="etiquette attente">à faire</span>{% endif %}</td>
+  <td class="mono">{{ p.miniature_path.split('/')[-1] if p.miniature_path else '—' }}</td>
+  <td>
+    <div class="rangee">
+      <form method="post" action="/projets/{{ p.id }}/{{ 'regenerer' if d.miniature_ok else 'generer' }}">
+        <input type="hidden" name="cible_type" value="miniature"><input type="hidden" name="cible_id" value="0">
+        <input type="hidden" name="fournisseur" value="chatgpt"><input type="hidden" name="mode" value="{{ mode_defaut }}">
+        <input type="hidden" name="origine" value="auto">
+        <button class="petit {{ 'danger' if d.miniature_ok }}" type="submit">{{ 'Régénérer' if d.miniature_ok else 'Générer' }}</button></form>
+    </div>
+    <form method="post" action="/projets/{{ p.id }}/importer-media" enctype="multipart/form-data" style="margin-top:6px">
+      <input type="hidden" name="cible_type" value="miniature"><input type="hidden" name="cible_id" value="0">
+      <input type="hidden" name="retour_vers" value="generations">
+      <div class="rangee"><input type="file" name="fichier" accept=".png,.jpg,.jpeg,.webp" required style="width:200px">
+      <button class="doux petit" type="submit">Importer</button></div>
+    </form>
+  </td>
+</tr>
+</table>
+
+<h2>Tâches ({{ d.taches|length }})</h2>
+<p class="sous-titre">« À vérifier » signifie que l'application ne sait pas et ne relancera rien. Vérifie chez le fournisseur avant de réessayer.</p>
+{% if d.taches %}
+<table>
+<tr><th>#</th><th>Élément</th><th>Fournisseur</th><th>Origine</th><th>Statut</th><th>Lancée / finie</th><th>Message</th><th></th></tr>
+{% for t in d.taches %}
+<tr>
+  <td class="mono">{{ t.id }}</td>
+  <td>{{ t.libelle }}</td>
+  <td class="mono">{{ t.fournisseur }}/{{ t.mode }}</td>
+  <td><span class="etiquette {{ 'info' if t.origine=='auto' else 'neutre' }}">{{ t.origine }}</span></td>
+  <td><span class="etiquette {{ 'ok' if t.statut=='termine' else ('attente' if t.statut in ('en_attente','en_cours','a_verifier') else ('neutre' if t.statut=='annule' else 'ko')) }}">{{ t.statut.replace('_',' ') }}</span></td>
+  <td class="mono">{{ t.lance_le or '—' }}<br>{{ t.fini_le or '' }}</td>
+  <td style="max-width:420px">{{ t.message or '' }}</td>
+  <td>
+    {% if t.statut in ('a_verifier','echec','annule') %}
+    <form method="post" action="/taches/{{ t.id }}/reessayer" onsubmit="return confirm('Réessayer cet élément ? C est une action explicite qui peut consommer un quota.');">
+      <button class="petit" type="submit">Réessayer</button></form>
+    {% endif %}
+    {% if t.statut == 'en_attente' %}
+    <form method="post" action="/taches/{{ t.id }}/annuler"><button class="doux petit" type="submit">Annuler</button></form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% else %}<p class="vide">Aucune tâche pour l'instant.</p>{% endif %}
+
+<h2>Journal du projet</h2>
+<table>
+{% for j in d.journal %}
+<tr><td class="mono" style="width:150px">{{ j.horodatage }}</td>
+<td><span class="etiquette {{ 'ko' if j.niveau=='erreur' else ('attente' if j.niveau=='alerte' else 'neutre') }}">{{ j.niveau }}</span></td>
+<td>{{ j.message }}</td></tr>
+{% endfor %}
+</table>
+{% endblock %}

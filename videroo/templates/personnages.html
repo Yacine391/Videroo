@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block titre %}Personnages{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+<h2>Planches de référence — {{ d.personnages|length }} planche(s)</h2>
+<p class="sous-titre">⇩ Glisse l'image d'un personnage directement sur sa case pour la ranger. Personnages et objets de référence. Génère les planches ou importe des références que tu possèdes déjà. Une scène ne peut être générée que si les vraies images sont présentes : un code comme R1 ne remplace pas une image jointe.</p>
+
+{% if not d.personnages %}<p class="vide">Aucun personnage. Importe d'abord ton pack dans l'onglet Histoire.</p>{% endif %}
+
+{% for perso in d.personnages %}
+<div class="scene" id="perso-{{ perso.id }}" data-depot="planche:{{ perso.id }}" data-projet="{{ p.id }}">
+  <div class="tete">
+    <span class="num">{{ perso.code }}</span>
+    <strong>{{ perso.surnom }}</strong>
+    {% if not perso.code.startswith('R') %}<span class="etiquette info">objet</span>{% endif %}
+    <span class="mono">{{ perso.espece }}{% if perso.age %} · {{ perso.age }}{% endif %}{% if perso.genre %} · {{ perso.genre }}{% endif %}{% if perso.etat != 'UNIQUE' %} · {{ perso.etat }}{% endif %}</span>
+    {% if perso.ref_ok %}<span class="etiquette ok">référence présente</span>
+    {% else %}<span class="etiquette ko">référence absente</span>{% endif %}
+    {% if perso.ref_origine %}<span class="etiquette neutre">{{ perso.ref_origine }}</span>{% endif %}
+  </div>
+  <div class="corps">
+    <div class="grille deux">
+      <div>
+        {% if perso.ref_ok %}
+        <div class="apercu">
+          <a href="/media/{{ p.id }}/references/{{ perso.ref_path.split('/')[-1] }}" target="_blank">
+            <img src="/media/{{ p.id }}/references/{{ perso.ref_path.split('/')[-1] }}" alt="Planche {{ perso.code }}">
+          </a>
+        </div>
+        <p class="mono">{{ perso.ref_path }}</p>
+        {% else %}
+        <div class="note">Aucune planche. Génère-la (onglet Générations) ou importe-la ci-dessous.</div>
+        {% endif %}
+
+        <form method="post" action="/projets/{{ p.id }}/importer-media" enctype="multipart/form-data">
+          <input type="hidden" name="cible_type" value="planche">
+          <input type="hidden" name="cible_id" value="{{ perso.id }}">
+          <input type="hidden" name="retour_vers" value="personnages">
+          <label>Importer une référence (.png .jpg .webp)</label>
+          <input type="file" name="fichier" accept=".png,.jpg,.jpeg,.webp" required>
+          <div class="rangee" style="margin-top:8px"><button class="doux petit" type="submit">Importer cette référence</button></div>
+        </form>
+
+        <div class="sep"></div>
+        <form method="post" action="/projets/{{ p.id }}/generer" class="rangee">
+          <input type="hidden" name="cible_type" value="planche">
+          <input type="hidden" name="cible_id" value="{{ perso.id }}">
+          <input type="hidden" name="fournisseur" value="chatgpt">
+          <input type="hidden" name="origine" value="auto">
+          <select name="mode" style="width:auto">
+            {% for cle, libelle in modes.items() %}<option value="{{ cle }}">{{ cle }}</option>{% endfor %}
+          </select>
+          <button class="petit" type="submit">Générer la planche (1 seule fois)</button>
+        </form>
+      </div>
+      <div>
+        <form method="post" action="/personnages/{{ perso.id }}/champs">
+          <div class="grille trois">
+            <div><label>Code</label><input type="text" name="code" value="{{ perso.code }}"></div>
+            <div><label>Surnom</label><input type="text" name="surnom" value="{{ perso.surnom }}"></div>
+            <div><label>État</label><input type="text" name="etat" value="{{ perso.etat }}"></div>
+          </div>
+          <div class="grille trois">
+            <div><label>Espèce</label><input type="text" name="espece" value="{{ perso.espece or '' }}"></div>
+            <div><label>Âge</label><input type="text" name="age" value="{{ perso.age or '' }}"></div>
+            <div><label>Genre</label><input type="text" name="genre" value="{{ perso.genre or '' }}"></div>
+          </div>
+          <label>Rôle</label><input type="text" name="role" value="{{ perso.role or '' }}">
+          <label>Étiquette Grok</label><input type="text" name="etiquette_grok" value="{{ perso.etiquette_grok or '' }}">
+          <label>Verrou de voix</label><textarea name="voix">{{ perso.voix or '' }}</textarea>
+          <label>Lien avec le héros</label><input type="text" name="lien" value="{{ perso.lien or '' }}">
+          <label>Prompt de planche (ChatGPT)</label>
+          <div class="copiable">
+            <button class="doux petit" type="button" onclick="copier('planche-{{ perso.id }}', this)">Copier</button>
+            <textarea id="planche-{{ perso.id }}" name="prompt_planche" class="grand">{{ perso.prompt_planche or '' }}</textarea>
+          </div>
+          <div class="rangee" style="margin-top:10px"><button type="submit">Enregistrer</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+<script src="/static/depot.js?v={{ empreinte_style }}"></script>
+{% endblock %}

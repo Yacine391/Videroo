@@ -1,0 +1,155 @@
+Tu es mon agent de production vidéo. Installe MAINTENANT mon système de règles (fichiers + structure). Ne génère aucune image/vidéo dans ce message.
+
+
+## OBJECTIF
+Créer une organisation stricte multi-séries pour toutes les futures vidéos, valable pour TOUS les chats de ce projet.
+
+
+## ACTIONS OBLIGATOIRES (maintenant)
+1. Crée exactement cette structure :
+/workspace/artifacts/
+├── 00_LIRE_EN_PREMIER.txt
+├── REGLES_OBLIGATOIRES.txt
+├── CHECKLIST_AVANT_VIDEO.txt
+├── clean_apres_video.sh
+├── assets/
+│   ├── README.txt
+│   └── REGLES.txt
+└── Video/
+    ├── REGLES.txt
+    ├── elle_voulait_juste_quon_arrete_de_rire/
+    │   └── Episode 1/
+    └── Le_17_octobre/
+        └── Episode 1/
+            └── README.txt
+
+
+2. Écris le MÊME contenu de règles dans :
+   - 00_LIRE_EN_PREMIER.txt
+   - REGLES_OBLIGATOIRES.txt
+   - Video/REGLES.txt
+   - assets/REGLES.txt
+
+
+### CONTENU DES RÈGLES (copie exacte)
+################################################################################
+#  !!! RÈGLES BLOQUANTES — LIRE EN PREMIER AVANT TOUT OUTIL / TOUTE VIDÉO !!!  #
+#  Projet multi-séries vidéo. TOUS les chats DOIVENT obéir.                    #
+################################################################################
+
+
+## COMMANDE 0 (obligatoire au début de chaque job vidéo)
+cat /workspace/artifacts/REGLES_OBLIGATOIRES.txt
+# puis appliquer EXACTEMENT le workflow ci-dessous.
+
+
+## STRUCTURE (seule vérité)
+/workspace/artifacts/Video/<Serie>/Episode N/video1.mp4, video2.mp4, …
+/workspace/artifacts/assets/   ← audio, timestamps, close-ups, images de travail
+
+
+Séries :
+- elle_voulait_juste_quon_arrete_de_rire
+- Le_17_octobre
+(Si nouvelle série → créer immédiatement Video/<nouvelle_serie>/Episode 1/)
+
+
+## INTERDIT (si tu fais ça = ÉCHEC)
+1. Laisser imagine_videos/ ou imagine_images/ après le job
+2. Générer 2 vidéos pour 1 scène
+3. Écraser videoN d'un autre plan / personnage
+4. Fichiers UUID.mp4 / UUID.png en vrac
+5. Audio/images de travail hors de assets/
+
+
+## WORKFLOW OBLIGATOIRE
+1. Lire ce fichier
+2. ls Video/<serie>/Episode N/  → prendre le prochain numéro videoN (incrémenter)
+3. 1 seule génération Imagine (voix + lèvres = "Choix A" dans le prompt)
+4. ffmpeg trim ≤8s + volume si besoin → SAUVER SEULEMENT :
+     Video/<serie>/Episode N/videoN.mp4
+5. assets/ pour speech / close-up / source / timestamps
+6. OBLIGATOIRE :
+     rm -rf /workspace/artifacts/imagine_videos /workspace/artifacts/imagine_images
+   (ou bash /workspace/artifacts/clean_apres_video.sh)
+7. Vérifier : ls n'affiche PLUS imagine_*
+
+
+## CHECKLIST AVANT DE RÉPONDRE À L'UTILISATEUR
+[ ] videoN au bon endroit avec le BON numéro
+[ ] aucun overwrite d'un plan précédent
+[ ] assets à jour
+[ ] imagine_videos ABSENT
+[ ] imagine_images ABSENT
+
+
+## DURÉE / VOIX
+Max 8–10s, fin nette, pas de blanc inutile.
+Voix + lip-sync générés ENSEMBLE dans le prompt Imagine.
+Boost volume FFmpeg seulement si besoin.
+PAS de TTS collé après (sauf demande explicite).
+
+
+## ÉCONOMIE DE TOKENS
+- UNE seule génération vidéo par scène (one-shot)
+- Si ajustement → REMPLACER videoN (écraser la même), jamais en créer une 2e version à côté
+- Une seule version finale dans Video/<serie>/Episode N/
+
+
+FIN — NE PAS IGNORER CES RÈGLES
+################################################################################
+
+
+3. CHECKLIST_AVANT_VIDEO.txt doit contenir :
+1. cat REGLES_OBLIGATOIRES.txt
+2. ls Video/<serie>/Episode N/ → prochain videoN (ne jamais écraser)
+3. 1 seule génération
+4. sauver Video/.../videoN.mp4
+5. assets/ pour audio/images
+6. rm -rf imagine_videos imagine_images
+7. vérifier : plus de dossier imagine_*
+
+
+4. clean_apres_video.sh (exécutable) :
+#!/bin/bash
+rm -rf /workspace/artifacts/imagine_videos /workspace/artifacts/imagine_images
+echo "imagine_* supprimés."
+find /workspace/artifacts -maxdepth 3 -type d | sort
+ls /workspace/artifacts/Video/*/Episode\ */video*.mp4 2>/dev/null | sort
+
+
+5. assets/README.txt :
+Dossier ASSETS — audio, textes, timestamps, images de travail pour les vidéos.
+Ne pas y mettre les vidéos finales (→ Video/<serie>/Episode N/).
+
+
+6. Si des dossiers imagine_videos ou imagine_images existent déjà → SUPPRIME-LES maintenant (sauf si une vidéo finale n'a pas encore été copiée dans Video/… ; dans ce cas, range d'abord, puis supprime).
+
+
+7. À la fin, montre-moi :
+- l'arbre des dossiers
+- la confirmation que les 4 fichiers de règles existent
+- qu'il n'y a plus de imagine_videos / imagine_images
+
+
+## COMPORTEMENT POUR TOUTES LES PROCHAINES DEMANDES
+- Toujours appliquer ces règles sans que je les rappelle
+- Demander SÉRIE + ÉPISODE si manquant
+- Nommer video1, video2, video3… dans l'ordre
+- Style voix Choix A (voix+lèvres ensemble)
+- Finir chaque job par le nettoyage imagine_*
+
+
+Installe le système maintenant.
+
+
+RÈGLES BLOQUANTES PROJET VIDÉO — OBLIGATOIRE
+
+
+1) Avant chaque job vidéo : lire /workspace/artifacts/REGLES_OBLIGATOIRES.txt
+2) Structure : Video/<Serie>/Episode N/videoN.mp4 | assets/ = audio/images de travail
+3) 1 seule génération par scène (one-shot, voix+lèvres ensemble)
+4) Jamais écraser un videoN d'un autre plan
+5) Fin de job : rm -rf imagine_videos imagine_images (ou bash clean_apres_video.sh)
+6) Interdit de laisser imagine_* ou des UUID en vrac
+7) Avant de répondre : vérifier que imagine_* n'existent plus

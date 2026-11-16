@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block titre %}Montage{% endblock %}
+{% block corps %}
+{% set p = d.projet %}
+
+<div class="grille trois">
+  <div class="carte"><div class="chiffre">{{ '%.1f'|format(plan.duree_brute) }} s</div><div class="libelle">clips coupés, avant vitesse</div></div>
+  <div class="carte"><div class="chiffre">{{ '%.1f'|format(plan.duree_finale) }} s</div><div class="libelle">durée finale estimée</div></div>
+  <div class="carte"><div class="chiffre">{{ plan.clips|length }}/{{ plan.scenes_total }}</div><div class="libelle">scènes avec vidéo</div></div>
+</div>
+
+{% for b in plan.bloquants %}<div class="alerte"><strong>Bloquant :</strong> {{ b }}</div>{% endfor %}
+{% for a in plan.avertissements %}<div class="note">{{ a }}</div>{% endfor %}
+
+<h2>Réglages de l'export</h2>
+<form method="post" action="/projets/{{ p.id }}/entete" class="carte">
+  <input type="hidden" name="retour_vers" value="montage">
+  <div class="grille trois">
+    <div><label>Largeur</label><input type="number" name="export_largeur" value="{{ p.export_largeur }}"></div>
+    <div><label>Hauteur</label><input type="number" name="export_hauteur" value="{{ p.export_hauteur }}"></div>
+    <div><label>Vitesse (1 = normale)</label><input type="text" name="vitesse" value="{{ p.vitesse }}"></div>
+    <div><label>Volume de la musique (0 à 1)</label><input type="text" name="musique_volume" value="{{ p.musique_volume }}"></div>
+    <div><label>Durée souhaitée minimum (s)</label><input type="text" name="duree_cible_min" value="{{ p.duree_cible_min }}"></div>
+    <div style="align-self:end"><button type="submit">Enregistrer et recalculer</button></div>
+  </div>
+  <p class="mono">Vertical 1080 × 1920 par défaut. Agrandir une source plus petite ou monter la cadence
+  ne crée aucun détail supplémentaire : c'est signalé scène par scène ci-dessous.</p>
+</form>
+
+<div class="grille deux">
+  <div class="carte">
+    <h3 style="margin-top:0">Musique (facultative)</h3>
+    {% if p.musique_path %}
+      <p class="mono">{{ p.musique_path.split('/')[-1] }}</p>
+      <form method="post" action="/projets/{{ p.id }}/musique/retirer"><button class="doux petit" type="submit">Retirer la musique</button></form>
+    {% else %}<p class="mono">Aucune musique : seuls les dialogues des clips seront entendus.</p>{% endif %}
+    <form method="post" action="/projets/{{ p.id }}/musique" enctype="multipart/form-data" style="margin-top:8px">
+      <input type="file" name="fichier" accept=".mp3,.wav,.m4a,.aac,.ogg" required>
+      <div class="rangee" style="margin-top:8px"><button class="doux petit" type="submit">Ajouter la musique</button></div>
+    </form>
+  </div>
+  <div class="carte">
+    <h3 style="margin-top:0">Transcription locale (étape suivante)</h3>
+    <p class="mono">Pour cette version : importe un SRT ou corrige les timings proposés à la main.
+    Le bouton ci-dessous extrait l'audio de l'export, prêt pour un moteur local.</p>
+    <form method="post" action="/projets/{{ p.id }}/transcription"><button class="doux petit" type="submit">Extraire l'audio de l'export</button></form>
+  </div>
+</div>
+
+<h2>Clips dans l'ordre du scénario</h2>
+<table>
+<tr><th>Scène</th><th>Fichier</th><th>Source</th><th>Coupes</th><th>Utile</th><th>Audio</th></tr>
+{% for c in plan.clips %}
+<tr>
+  <td><strong>{{ c.numero }}</strong> {{ c.titre }}</td>
+  <td class="mono">{{ c.chemin.split('/')[-1] }}</td>
+  <td class="mono">{{ '%.2f'|format(c.duree_source) }} s · {{ c.largeur }}x{{ c.hauteur }}</td>
+  <td class="mono">−{{ c.trim_debut }} / −{{ c.trim_fin }}</td>
+  <td class="mono">{{ '%.2f'|format(c.duree_utile) }} s</td>
+  <td>{% if c.a_audio %}<span class="etiquette ok">oui</span>{% else %}<span class="etiquette ko">non</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% if plan.scenes_sans_video %}
+<div class="note">{{ plan.scenes_sans_video }} scène(s) sans vidéo ne seront pas dans l'export.
+Les coupes se règlent scène par scène dans l'onglet Scènes.</div>
+{% endif %}
+
+<h2>Export scène par scène</h2>
+<p class="sous-titre">Chaque scène exportée seule en MP4, au même format que l'épisode :
+vertical {{ p.export_largeur }} × {{ p.export_hauteur }}, coupes et vitesse appliquées,
+audio conservé. Pratique pour publier les scènes séparément.</p>
+
+<form method="post" action="/projets/{{ p.id }}/exporter-scenes" class="carte">
+  <div class="rangee">
+    <label style="text-transform:none;margin:0">
+      <input type="checkbox" name="incruster_srt" value="1" style="width:auto">
+      Incruster les dialogues de chaque scène
+    </label>
+    <label style="text-transform:none;margin:0">
+      <input type="checkbox" name="avec_musique" value="1" style="width:auto">
+      Ajouter la musique
+    </label>
+    <button type="submit">Exporter toutes les scènes</button>
+  </div>
+  <p class="mono">Les scènes sans vidéo sont laissées de côté et signalées.</p>
+</form>
+
+<table>
+<tr><th>Scène</th><th>Titre</th><th>Fichier</th><th>Durée</th><th>Format</th><th>Audio</th><th></th></tr>
+{% for s in scenes_exportees %}
+<tr>
+  <td><strong>{{ s.numero }}</strong></td>
+  <td>{{ s.titre }}</td>
+  <td class="mono">{{ s.fichier or '—' }}</td>
+  <td class="mono">{% if s.infos %}{{ '%.2f'|format(s.infos.duree) }} s{% else %}—{% endif %}</td>
+  <td class="mono">{% if s.infos %}{{ s.infos.largeur }}×{{ s.infos.hauteur }}{% else %}—{% endif %}</td>
+  <td>{% if s.infos %}{% if s.infos.a_audio %}<span class="etiquette ok">oui</span>{% else %}<span class="etiquette ko">non</span>{% endif %}{% else %}—{% endif %}</td>
+  <td>
+    <div class="rangee">
+      {% if s.a_video %}
+      <form method="post" action="/projets/{{ p.id }}/scenes/{{ s.id }}/exporter">
+        <input type="hidden" name="retour_vers" value="montage">
+        <button class="petit {{ 'doux' if s.exporte }}" type="submit">{{ 'Réexporter' if s.exporte else 'Exporter' }}</button>
+      </form>
+      {% else %}<span class="etiquette neutre">pas de vidéo</span>{% endif %}
+      {% if s.exporte %}
+      <a class="bouton doux petit" href="/media/{{ p.id }}/export/scenes/{{ s.fichier }}" download>Télécharger</a>
+      {% endif %}
+    </div>
+  </td>
+</tr>
+{% endfor %}
+</table>
+<form method="post" action="/projets/{{ p.id }}/scenes-archive" style="margin-top:10px">
+  <button class="doux" type="submit">Télécharger toutes les scènes (ZIP)</button>
+</form>
+
+<h2>Sous-titres (facultatifs)</h2>
+<div class="rangee">
+  <form method="post" action="/projets/{{ p.id }}/soustitres/proposer"><button class="doux" type="submit">Proposer depuis les dialogues du pack</button></form>
+  <form method="post" action="/projets/{{ p.id }}/soustitres/exporter"><button class="doux" type="submit">Exporter en SRT</button></form>
+  <form method="post" action="/projets/{{ p.id }}/soustitres/importer" enctype="multipart/form-data" class="rangee">
+    <input type="file" name="fichier" accept=".srt" required style="width:220px">
+    <button class="doux" type="submit">Importer un SRT</button>
+  </form>
+</div>
+{% if sous_titres %}
+<form method="post" action="/projets/{{ p.id }}/soustitres/enregistrer" class="carte" style="margin-top:12px">
+<table>
+<tr><th style="width:100px">Début (s)</th><th style="width:100px">Fin (s)</th><th>Texte</th></tr>
+{% for st in sous_titres %}
+<tr>
+  <td><input type="text" name="debut_{{ loop.index0 }}" value="{{ '%.3f'|format(st.debut) }}"></td>
+  <td><input type="text" name="fin_{{ loop.index0 }}" value="{{ '%.3f'|format(st.fin) }}"></td>
+  <td><input type="text" name="texte_{{ loop.index0 }}" value="{{ st.texte }}"></td>
+</tr>
+{% endfor %}
+</table>
+<div class="rangee" style="margin-top:10px"><button type="submit">Enregistrer les sous-titres</button></div>
+</form>
+{% else %}<p class="vide">Aucun sous-titre. Les timings proposés sont un point de départ à corriger.</p>{% endif %}
+
+<h2>Lancer l'assemblage</h2>
+<form method="post" action="/projets/{{ p.id }}/exporter" class="carte">
+  <div class="rangee">
+    <label style="text-transform:none;margin:0">
+      <input type="checkbox" name="incruster_srt" value="1" style="width:auto"> Incruster les sous-titres dans l'image
+    </label>
+    <button type="submit" {{ 'disabled' if not plan.utilisable }}>Assembler et exporter en MP4</button>
+  </div>
+  <p class="mono">Un seul encodage ffmpeg pour tout l'épisode : coupes, format vertical, vitesse,
+  musique et sous-titres sont appliqués en une passe.</p>
+</form>
+{% endblock %}

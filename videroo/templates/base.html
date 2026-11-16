@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block titre %}Videroo{% endblock %} — Videroo</title>
+<link rel="stylesheet" href="/static/style.css?v={{ empreinte_style }}">
+</head>
+<body>
+<header class="haut">
+  <div class="marque">VIDE<span>ROO</span></div>
+  <nav>
+    <a href="/">Projets</a>
+    <a href="/metaprompt">Métaprompts</a>
+    <a href="/bibliotheque">Bibliothèque</a>
+    <a href="/admin">Admin</a>
+  </nav>
+  <div class="droite">local · 127.0.0.1 · v{{ version }}</div>
+</header>
+
+{% if message %}<div class="bandeau ok">{{ message }}</div>{% endif %}
+{% if erreur %}<div class="bandeau ko">{{ erreur }}</div>{% endif %}
+
+<main>
+{% if d is defined %}
+  {% set p = d.projet %}
+  <h1>{{ p.titre or p.nom }}
+    <span class="etiquette {{ 'ok' if p.statut in ('valide','en_cours','termine') else ('attente' if p.statut in ('brouillon','pause') else 'ko') }}">{{ p.statut.replace('_',' ') }}</span>
+    {% if p.archive %}<span class="etiquette neutre">archivé</span>{% endif %}
+  </h1>
+  <p class="sous-titre">
+    {{ p.moteur or '—' }} · {{ p.univers or '—' }} ·
+    {{ d.scenes|length }} scène(s) · {{ d.duree_totale_pack }} s annoncées
+    {% if d.tache_active %} · <span class="etiquette attente">génération en cours : {{ d.tache_active.libelle }}</span>{% endif %}
+  </p>
+  <div class="onglets">
+    <a href="/projets/{{ p.id }}/histoire" class="{{ 'actif' if onglet=='histoire' }}">Histoire</a>
+    <a href="/projets/{{ p.id }}/personnages" class="{{ 'actif' if onglet=='personnages' }}">Personnages</a>
+    <a href="/projets/{{ p.id }}/scenes" class="{{ 'actif' if onglet=='scenes' }}">Scènes</a>
+    <a href="/projets/{{ p.id }}/atelier" class="{{ 'actif' if onglet=='atelier' }}">Atelier</a>
+  </div>
+{% endif %}
+{% block corps %}{% endblock %}
+</main>
+<footer>Videroo — tes fichiers, tes projets et tes journaux restent sur cet ordinateur.</footer>
+<script>
+function copier(id, bouton){
+  const zone = document.getElementById(id);
+  const texte = zone.value !== undefined ? zone.value : zone.textContent;
+  navigator.clipboard.writeText(texte).then(function(){
+    const avant = bouton.textContent; bouton.textContent = 'Copié ✓';
+    setTimeout(function(){ bouton.textContent = avant; }, 1600);
+  });
+}
+</script>
+</body>
+</html>
