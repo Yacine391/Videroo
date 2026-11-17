@@ -28,7 +28,14 @@
   </div>
   <div class="corps">
     {% if s.problemes %}
-    <div class="alerte"><strong>À corriger avant génération :</strong> {{ s.problemes|join(' · ') }}</div>
+    <div class="alerte"><strong>À corriger avant génération :</strong> {{ s.problemes|join(' · ') }}
+      {% if s.problemes|length == 1 and s.problemes[0].startswith('aucun personnage de référence') and not s.refs %}
+      <form method="post" action="/scenes/{{ s.id }}/sans-personnage" class="rangee" style="margin-top:8px"
+            onsubmit="return confirm('Confirmer que ce plan ne montre aucun personnage (archive, objet, décor) ? Aucune planche ne sera jointe à son image.');">
+        <button class="doux" type="submit">C'est un plan sans personnage — le valider</button>
+      </form>
+      {% endif %}
+    </div>
     {% endif %}
 
     <div class="grille deux">

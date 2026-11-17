@@ -228,10 +228,7 @@ def controles_avant_lancement(projet_id: int, cible_type: str, cible_id: int) ->
     if not scene:
         raise GenerationRefusee("Scène introuvable.")
     if not scene["valide"]:
-        raise GenerationRefusee(
-            f"Scène {scene['numero']} non validée. Valide-la dans l'onglet Scènes "
-            "(c'est la validation qui autorise une génération)."
-        )
+        raise GenerationRefusee(pourquoi_hors_chaine(projet_id, scene))
 
     if cible_type == "image":
         if not (scene["prompt_image"] or "").strip():
@@ -999,6 +996,46 @@ def _planche_en_route(projet_id: int, scene_id: int) -> tuple[str, str] | None:
     return None
 
 
+def pourquoi_hors_chaine(projet_id: int, scene) -> str:
+    """Pourquoi cette scène n'est pas dans la chaîne — avec SA raison, pas un renvoi.
+
+    « Valide-la dans l'onglet Scènes » ne disait rien quand la validation
+    elle-même échouait (scène 7 de l'épisode 9 : aucune issue affichée).
+    """
+    from . import services  # services importe runner : import tardif
+
+    codes = {p["code"] for p in db.q("SELECT code FROM personnages WHERE projet_id=?", (projet_id,))}
+    soucis = services.problemes_scene(dict(scene), codes)
+    if not soucis:
+        return (
+            f"Scène {scene['numero']} non validée : « Lancer la génération » "
+            "valide les scènes complètes, ou valide-la dans l'onglet Scènes."
+        )
+    return (
+        f"Scène {scene['numero']} laissée de côté : {' ; '.join(soucis)}. "
+        "Corrige-la dans l'onglet Scènes, puis relance la chaîne."
+    )
+
+
+def scenes_hors_chaine(projet_id: int) -> list[dict]:
+    """Les scènes que la chaîne ne fera pas, et pourquoi (affiché, jamais tu)."""
+    sortie = []
+    for scene in db.q(
+        "SELECT * FROM scenes WHERE projet_id=? AND valide=0 ORDER BY numero", (projet_id,)
+    ):
+        if fichiers.fichier_utilisable(scene["image_path"]) and fichiers.fichier_utilisable(
+            scene["video_path"]
+        ):
+            continue  # déjà faite à la main : rien ne manque
+        sortie.append({
+            "id": scene["id"],
+            "numero": scene["numero"],
+            "libelle": f"Scène {scene['numero']} — {scene['titre'] or ''}".strip(" —"),
+            "motif": pourquoi_hors_chaine(projet_id, scene),
+        })
+    return sortie
+
+
 def _elements_dans_l_ordre(projet_id: int) -> list[tuple[str, int, str]]:
     """Tout ce qu'il y a a produire, dans l'ordre de fabrication.
 
@@ -1110,6 +1147,7 @@ def etat_production(projet_id: int) -> dict:
             attentes.append(ligne)
 
     return {
+        "hors_chaine": scenes_hors_chaine(projet_id),
         "attentes_quota": attentes,
         "reprise_auto": bool(
             projet["pipeline"] and attentes and retour_proche(projet_id) is not None

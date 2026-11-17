@@ -104,7 +104,7 @@ génération à la fois, et jamais de relance toute seule — « regénérer » 
         <span class="num">{{ s.numero }}</span>
         <strong>{{ s.titre }}</strong>
         <span class="mono">{{ s.duree }} s{% if s.refs %} · {{ s.refs|join(' ') }}{% endif %}</span>
-        {% if not s.valide %}<span class="etiquette attente">pas encore validée</span>{% endif %}
+        <span class="etiquette attente" data-validite="{{ s.id }}"{% if s.valide %} hidden{% endif %}>pas encore validée</span>
       </div>
       <div class="duo-corps">
         {{ bloc(s.image) }}
@@ -421,6 +421,10 @@ function peindreTout(fil) {
       : 'Limite atteinte — relance la chaîne au retour du quota';
     detail.textContent = fil.production.attentes_quota
       .map(a => a.libelle + ' : ' + a.motif).join(' — ');
+  } else if ((fil.production.hors_chaine || []).length) {
+    point.className = 'point';
+    titre.textContent = 'Scène(s) laissée(s) de côté — elles attendent ta correction';
+    detail.textContent = fil.production.hors_chaine.map(h => h.motif).join(' — ');
   } else {
     point.className = 'point fini';
     titre.textContent = 'Rien en attente';
@@ -449,11 +453,20 @@ function peindreTout(fil) {
 
   const zoneBlocages = document.getElementById('pilote-blocages');
   const blocages = fil.production.blocages || [];
-  zoneBlocages.hidden = blocages.length === 0;
+  const horsChaine = fil.production.hors_chaine || [];
+  zoneBlocages.hidden = blocages.length === 0 && horsChaine.length === 0;
   zoneBlocages.innerHTML = blocages
     .map(b => '<div>⛔ <strong>' + b.libelle + '</strong> (' + b.fournisseur
       + ') — ' + b.motif + ' La chaîne s\'arrête ici et ne passe pas à la suite.</div>')
+    .concat(horsChaine.map(h => '<div>⛔ <strong>' + h.libelle + '</strong> — ' + h.motif
+      + ' <a href="/projets/' + PROJET + '/scenes#scene-' + h.id + '">Ouvrir la scène</a></div>'))
     .join('');
+  // Le badge « pas encore validée » suit la base : « Lancer » valide les scènes
+  // complètes, la page ne doit pas continuer à dire le contraire.
+  (fil.scenes || []).forEach(sc => {
+    const badge = document.querySelector('[data-validite="' + sc.id + '"]');
+    if (badge) badge.hidden = !!sc.valide;
+  });
   const nav = fil.navigateur || {chromes: [], memoire_mo: 0, sur_ton_ecran: []};
   const ligneNav = document.getElementById('pilote-navigateur');
   if (!nav.chromes.length) {

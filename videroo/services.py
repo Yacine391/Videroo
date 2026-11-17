@@ -627,6 +627,42 @@ def maj_scene(scene_id: int, champs: dict[str, Any]) -> None:
     db.exec1(f"UPDATE scenes SET {assignations} WHERE id=?", (*retenus.values(), scene_id))
 
 
+#: Le seul souci qu'une confirmation de ta part peut lever (« plan sans personnage »).
+SANS_REFERENCE = "aucun personnage de référence"
+
+_RE_NOM_PROPRE = re.compile(r"^[A-ZÀ-Ý][\wÀ-ÿ'’-]*$")
+
+
+def references_non_reconnues(scene: dict) -> list[str]:
+    """Les morceaux de la ligne « Références » qui ressemblent à un NOM de personnage
+    (un seul mot à majuscule : « Pixel », « Shadow ») sans correspondre à aucun."""
+    return [
+        r["nom"] for r in parser_v6._decouper_refs(scene.get("refs_brut") or "")
+        if _RE_NOM_PROPRE.match(r["nom"])
+    ]
+
+
+def plan_sans_personnage(scene: dict) -> bool:
+    """Ce plan ne montre volontairement aucun personnage : il n'a besoin d'aucune planche.
+
+    Le 17 novembre 2026 (Secret Pets, épisode 9, scène 7 « La consigne
+    originale »), le pack disait « Références — Plaque « ROX / CANDIDAT » et
+    boîtier noir… » et « Aucun visage ni personnage en entier dans le cadre » :
+    une archive d'objets. La règle « au moins un personnage de référence » la
+    refusait, et même la validation à la main échouait — aucune issue.
+
+    Vrai si tu l'as confirmé, ou si le pack donne pour ce plan une ligne de
+    références qui ne cite que des objets ou des lieux : aucun morceau n'est un
+    nom de personnage (un « Pixel » non reconnu, lui, garde le plan bloqué).
+    """
+    if scene.get("sans_personnage"):
+        return True
+    if db.charger_json(scene.get("refs_codes"), []):
+        return False
+    morceaux = parser_v6._decouper_refs(scene.get("refs_brut") or "")
+    return bool(morceaux) and not references_non_reconnues(scene)
+
+
 def problemes_scene(scene: dict, codes_connus: set[str]) -> list[str]:
     soucis: list[str] = []
     if not (scene.get("prompt_image") or "").strip():
@@ -641,8 +677,13 @@ def problemes_scene(scene: dict, codes_connus: set[str]) -> list[str]:
     elif scene.get("duree") not in config.DUREES_GROK:
         soucis.append(f"durée {scene.get('duree')} s non prise en charge par Grok")
     codes = db.charger_json(scene.get("refs_codes"), [])
-    if not codes:
-        soucis.append("aucun personnage de référence")
+    if not codes and not plan_sans_personnage(scene):
+        inconnus = references_non_reconnues(scene)
+        soucis.append(
+            SANS_REFERENCE
+            + (f" (« {' », « '.join(inconnus)} » ne correspond à aucun personnage du pack)"
+               if inconnus else "")
+        )
     for c in codes:
         if c not in codes_connus:
             soucis.append(f"référence inconnue : {c}")
@@ -669,6 +710,25 @@ def valider_scene(scene_id: int, valide: bool = True) -> list[str]:
         scene["projet_id"],
     )
     return soucis
+
+
+def confirmer_sans_personnage(scene_id: int) -> list[str]:
+    """Tu confirmes que ce plan ne montre aucun personnage : il se valide sans planche."""
+    scene = db.q1("SELECT * FROM scenes WHERE id=?", (scene_id,))
+    if not scene:
+        raise ErreurMetier("Scène inconnue.")
+    if db.charger_json(scene["refs_codes"], []):
+        raise ErreurMetier(
+            f"Scène {scene['numero']} : elle cite des personnages "
+            f"({', '.join(db.charger_json(scene['refs_codes'], []))}). Rien n'a été changé."
+        )
+    db.exec1("UPDATE scenes SET sans_personnage=1 WHERE id=?", (scene_id,))
+    db.journaliser(
+        f"Scène {scene['numero']} : plan sans personnage confirmé par toi — aucune "
+        "planche ne sera jointe.",
+        scene["projet_id"],
+    )
+    return valider_scene(scene_id, True)
 
 
 def valider_projet(projet_id: int) -> dict:

@@ -223,6 +223,9 @@ COLONNES_SUPPLEMENTAIRES: dict[str, dict[str, str]] = {
         "export_path": "TEXT",
         "video_conforme": "INTEGER",
         "video_ecart": "REAL",
+        # 1 = tu as confirmé que ce plan ne montre aucun personnage (archive,
+        # objet, décor) : il se valide sans planche.
+        "sans_personnage": "INTEGER DEFAULT 0",
     },
     "taches": {
         "envoye": "INTEGER NOT NULL DEFAULT 1",

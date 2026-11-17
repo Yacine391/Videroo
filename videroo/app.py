@@ -324,6 +324,22 @@ def scene_valider(scene_id: int, valide: int = Form(1)):
     )
 
 
+@app.post("/scenes/{scene_id}/sans-personnage")
+def scene_sans_personnage(scene_id: int):
+    """Ton geste : « ce plan ne montre aucun personnage » — il se valide sans planche."""
+    ligne = db.q1("SELECT projet_id, numero FROM scenes WHERE id=?", (scene_id,))
+    if not ligne:
+        return retour("/", err="Scène inconnue.")
+    try:
+        services.confirmer_sans_personnage(scene_id)
+    except services.ErreurMetier as exc:
+        return retour(f"/projets/{ligne['projet_id']}/scenes", err=str(exc))
+    return retour(
+        f"/projets/{ligne['projet_id']}/scenes#scene-{scene_id}",
+        f"Scène {ligne['numero']} validée comme plan sans personnage : aucune planche jointe.",
+    )
+
+
 # --------------------------------------------------------------------------
 # Generations
 # --------------------------------------------------------------------------

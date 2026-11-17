@@ -539,7 +539,13 @@ def _personnages_sans_planche(lignes: list[str], res: ResultatImport) -> None:
     for ligne in lignes:
         m = RE_LISTE_PERSONNAGES.match(ligne)
         if m:
-            noms = [n.strip() for n in re.split(r",| et ", m.group(1)) if n.strip()]
+            # « Rox, Coco, Kiki, Luna et Pixel. Shadow apparaît dans l'archive. » :
+            # la liste s'arrête à la première phrase (17 novembre 2026, épisode 9 :
+            # le 5ᵉ personnage s'appelait « PIXEL. SHADOW APPARAÎT DANS L'ARCHIVE »,
+            # et Pixel n'était reconnu dans aucune scène).
+            liste = re.split(r"\.\s+(?=[A-ZÀ-Ý])", m.group(1), maxsplit=1)[0]
+            noms = [n.strip().strip(".").strip() for n in re.split(r",| et ", liste)]
+            noms = [n for n in noms if n]
             break
     else:
         res.avertir(
