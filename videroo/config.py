@@ -58,7 +58,9 @@ TYPES_PROJET = {
 TYPE_PROJET_DEFAUT = "fruits"
 
 STATUTS_PROJET = ("brouillon", "valide", "en_cours", "pause", "arrete", "termine")
-STATUTS_TACHE = ("en_attente", "en_cours", "termine", "echec", "a_verifier", "annule")
+# « quota » : le fournisseur a refusé faute de quota. Rien produit, rien payé :
+# ce statut ne consomme PAS l'unique génération automatique de l'élément.
+STATUTS_TACHE = ("en_attente", "en_cours", "termine", "echec", "a_verifier", "annule", "quota")
 # Statuts qui consomment le droit a UNE generation automatique.
 STATUTS_TACHE_VIVANTS = ("en_attente", "en_cours", "termine", "echec", "a_verifier")
 

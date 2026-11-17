@@ -141,41 +141,57 @@ class TestAttenteDImage(unittest.TestCase):
             )
         self.assertEqual(trouvee, "poire", "on retient celle qui s'est posée")
 
-    def test_un_quota_ne_se_fait_pas_passer_pour_un_delai_depasse(self):
-        """Avant, l'arrêt au bout de 5 s ressortait en « rien après 420 s »."""
-        class PageQuota(PageImages):
-            def locator(self, selecteur):
-                if selecteur == "quota":
-                    page = self
+    def test_un_refus_ne_se_fait_pas_passer_pour_un_delai_depasse(self):
+        """ChatGPT a répondu « limite atteinte » à NOTRE message : on le cite, tout de suite."""
+        from videroo.adapters import navigateur as nav
 
-                    class Signe:
-                        @property
-                        def first(self):
-                            class El:
-                                @staticmethod
-                                def is_visible(timeout=0):
-                                    return True
-
-                                @staticmethod
-                                def inner_text(timeout=0):
-                                    return "You've reached your limit"
-
-                            return El()
-
-                        @staticmethod
-                        def count():
-                            return 1
-
-                    return Signe()
-                return super().locator(selecteur)
-
-        page = PageQuota([["a"]])
-        sel = {"images_reponse": ["img"], "signes_quota": ["quota"]}
-        with avec_lecture_dimages():
-            trouvee, souci = chatgpt.AdaptateurChatGPT()._attendre_image(page, sel, ["a"], 30)
+        refus = ("Vous avez atteint la limite de demandes de génération d’images de "
+                 "l’offre Plus. Vous pourrez créer d’autres images après la "
+                 "réinitialisation de la limite, dans 1 heure.")
+        page = PageImages([["a"]])
+        sel = dict(SEL, refus_quota=[r"atteint (la|votre|ta) limite"])
+        with avec_lecture_dimages(), mock.patch.object(
+            nav, "apres_notre_message", return_value={"texte": refus, "images": []}
+        ):
+            trouvee, souci = chatgpt.AdaptateurChatGPT()._attendre_image(
+                page, sel, ["a"], 30, None, "Nuit du mariage, seuil de la chambre", []
+            )
         self.assertIsNone(trouvee)
-        self.assertIn("limite d'usage", souci)
-        self.assertIn("reached your limit", souci)
+        self.assertTrue(souci.startswith(chatgpt.AdaptateurChatGPT.REFUS))
+        self.assertIn("atteint la limite", souci)
+        self.assertIn("dans 1 heure", souci)
+
+    def test_le_mot_limite_dans_ton_prompt_n_arrete_rien(self):
+        """16 novembre 2026 : « deux limites franchies » dans le prompt a coupé l'attente."""
+        from videroo.adapters import navigateur as nav
+
+        page = PageImages([["a"], ["a", "b"], ["a", "b2"], ["a", "b3"], ["a", "b4"]])
+        sel = dict(SEL, refus_quota=[r"atteint (la|votre|ta) limite"])
+        with avec_lecture_dimages(), mock.patch.object(
+            nav, "apres_notre_message",
+            return_value={"texte": "Création de l'image en cours…", "images": []},
+        ):
+            trouvee, souci = chatgpt.AdaptateurChatGPT()._attendre_image(
+                page, sel, ["a"], 30, None,
+                "Sa méfiance est celle d’une amie qui constate deux limites franchies", [],
+            )
+        self.assertEqual(souci, "")
+        self.assertTrue(trouvee and trouvee.startswith("b"))
+
+    def test_sans_message_retrouve_on_ne_devine_pas_une_limite(self):
+        """Un vieux refus resté dans la conversation n'est pas la réponse du jour."""
+        from videroo.adapters import navigateur as nav
+
+        page = PageImages([["a"]])
+        sel = dict(SEL, refus_quota=[r"atteint (la|votre|ta) limite"])
+        with avec_lecture_dimages(), mock.patch.object(
+            nav, "apres_notre_message", return_value=None
+        ):
+            trouvee, souci = chatgpt.AdaptateurChatGPT()._attendre_image(
+                page, sel, ["a"], 4, None, "marqueur absent de la page", []
+            )
+        self.assertIsNone(trouvee)
+        self.assertNotIn("refus", souci)
 
 
 class TestRepereReleveAvantLEnvoi(unittest.TestCase):
@@ -313,6 +329,35 @@ class TestRecuperationSansGeneration(unittest.TestCase):
             runner.recuperer_resultat(pid, "image", 1)
         self.assertIn("en cours", str(piege.exception))
 
+    def test_une_image_chatgpt_en_cours_ne_bloque_pas_grok(self):
+        """Projet 43 : « Récupérer » sur une vidéo Grok refusé parce que ChatGPT
+        dessinait l'image 10. Deux navigateurs séparés ne se disputent rien."""
+        from videroo import db, runner, services
+        from videroo.adapters import navigateur as nav
+
+        pid = services.creer_projet("Récupération Grok")
+        services.appliquer_pack(pid, services.analyser_pack(tests.pack_variantes()))
+        scene = db.q1("SELECT id FROM scenes WHERE projet_id=? AND numero=2", (pid,))
+        from videroo import fichiers
+        image = fichiers.chemin_image_scene(services.projet(pid)["dossier"], 2)
+        tests.fabriquer_image_test(image)  # l'image de départ existe, comme scène 8
+        db.exec1("UPDATE scenes SET image_path=? WHERE id=?", (str(image), scene["id"]))
+        db.exec1(
+            "INSERT INTO taches (projet_id, cible_type, cible_id, libelle, fournisseur,"
+            " mode, origine, statut, empreinte, cree_le) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (pid, "image", 1, "Image 10", "chatgpt", "auto", "auto", "en_cours", "e",
+             db.maintenant()),
+        )
+
+        class GrokVide(base.Adaptateur):
+            def recuperer(self, ctx):
+                return base.ResultatGeneration(base.A_VERIFIER, "aucune vidéo")
+
+        with mock.patch.object(runner, "adaptateur", return_value=GrokVide()), \
+             mock.patch.object(nav, "session", return_value=SessionDirecte()):
+            bilan = runner.recuperer_resultat(pid, "video", scene["id"])
+        self.assertEqual(bilan["message"], "aucune vidéo", "Grok a bien été consulté")
+
 
 class AdaptateurQuiRend(base.Adaptateur):
     """Un faux fournisseur qui depose les octets qu'on lui donne."""
@@ -401,6 +446,27 @@ class TestRecuperationQuiRendLaPlanche(unittest.TestCase):
             apres["image_path"],
             "la planche a quand meme ete rattachee a la scene",
         )
+
+    def test_la_miniature_de_la_partie_precedente_est_reconnue(self):
+        """16 novembre 2026 : la partie 4 partage le chat ChatGPT de la partie 3 ;
+        « Récupérer » a rattaché à sa scène 1 la miniature de la partie 3."""
+        from videroo import db, fichiers, services
+
+        chat = "https://chatgpt.com/c/serie-commune"
+        precedente = services.creer_projet("Partie 3")
+        miniature = Path(services.projet(precedente)["dossier"]) / "miniature.png"
+        tests.fabriquer_image_test(miniature, texte="PARTIE 3")
+        db.exec1("UPDATE projets SET chatgpt_chat_url=?, miniature_path=? WHERE id=?",
+                 (chat, str(miniature), precedente))
+        db.exec1("UPDATE projets SET chatgpt_chat_url=? WHERE id=?", (chat, self.projet_id))
+
+        bilan = self._recuperer_avec(miniature.read_bytes())
+        self.assertFalse(bilan["ok"])
+        self.assertIn("miniature", bilan["message"])
+        self.assertIn("Partie 3", bilan["message"])
+        self.assertFalse(db.q1("SELECT image_path FROM scenes WHERE id=?",
+                               (self.scene["id"],))["image_path"])
+        self.assertTrue(miniature.exists(), "l'original de la partie 3 est intact")
 
     def test_le_fichier_pris_a_tort_est_efface(self):
         """Une copie exacte ne laisse rien derriere elle, mais l'original reste."""

@@ -192,12 +192,13 @@ class TestBasculeDansLeMoteur(BaseComptes):
         )
         self.assertEqual(len(taches), 1, "une seule tâche, malgré la bascule")
 
-    def test_tous_satures_met_le_projet_en_pause(self):
+    def test_tous_satures_donne_un_etat_quota_sans_pause(self):
+        """Plus de quota nulle part : ni « pause », ni « à vérifier » — « quota »."""
         tous = {c["profil"] for c in comptes.liste("chatgpt")}
         adaptateur = AdaptateurQuota(tous)
         statut = self._lancer(adaptateur)
-        self.assertEqual(statut, "intervention")
-        self.assertEqual(services.projet(self.projet_id)["statut"], "pause")
+        self.assertEqual(statut, base.QUOTA)
+        self.assertNotEqual(services.projet(self.projet_id)["statut"], "pause")
         self.assertEqual(len(adaptateur.appels), 2)
         for c in comptes.liste("chatgpt"):
             self.assertFalse(c["quota_dispo"])
@@ -205,7 +206,49 @@ class TestBasculeDansLeMoteur(BaseComptes):
             "SELECT * FROM taches WHERE projet_id=? ORDER BY id DESC LIMIT 1",
             (self.projet_id,),
         )
-        self.assertIn("Quota atteint sur tous tes comptes", tache["message"])
+        self.assertEqual(tache["statut"], "quota")
+        self.assertIn("Limite atteinte sur", tache["message"])
+        self.assertIn("rien à récupérer", tache["message"])
+
+    def test_refus_apres_envoi_sans_secours_dit_vrai(self):
+        """Projet 43, scène 8 : Grok a REFUSÉ le prompt envoyé (plus de crédits)
+        et aucun autre compte : rien à récupérer, et « rien n'a été envoyé » est faux."""
+
+        class AdaptateurRefus(AdaptateurQuota):
+            def generer(self, ctx):
+                ctx.envoye = True  # le prompt est bien parti…
+                return super().generer(ctx)  # …et le fournisseur le refuse
+
+        tous = {c["profil"] for c in comptes.liste("chatgpt")}
+        statut = self._lancer(AdaptateurRefus(tous))
+        self.assertEqual(statut, base.QUOTA)
+        tache = db.q1(
+            "SELECT * FROM taches WHERE projet_id=? ORDER BY id DESC LIMIT 1",
+            (self.projet_id,),
+        )
+        self.assertEqual(tache["statut"], "quota", "pas « à vérifier » : rien n'existe")
+        self.assertNotIn("Rien n'a été envoyé", tache["message"])
+        self.assertIn("rien à récupérer", tache["message"])
+        self.assertEqual(
+            db.q1("SELECT COUNT(*) n FROM taches WHERE projet_id=?", (self.projet_id,))["n"],
+            1, "aucune relance automatique tant qu'aucun compte n'est revenu",
+        )
+
+    def test_sans_compte_disponible_rien_ne_part_sur_le_profil_d_un_autre(self):
+        """Tous les comptes du projet épuisés : avant, la tâche partait sur le
+        profil « principal » — le compte de quelqu'un d'autre."""
+        for c in comptes.liste("chatgpt"):
+            comptes.marquer_quota_epuise(c["id"], "test")
+        adaptateur = AdaptateurQuota(set())
+        statut = self._lancer(adaptateur)
+        self.assertEqual(statut, base.QUOTA)
+        self.assertEqual(adaptateur.appels, [], "aucun navigateur ouvert, aucun envoi")
+        tache = db.q1(
+            "SELECT * FROM taches WHERE projet_id=? ORDER BY id DESC LIMIT 1",
+            (self.projet_id,),
+        )
+        self.assertEqual((tache["statut"], tache["envoye"]), ("quota", 0))
+        self.assertIn("rien n'a été envoyé", tache["message"])
 
     def test_le_compte_utilise_est_journalise(self):
         self._lancer(AdaptateurQuota(set()))

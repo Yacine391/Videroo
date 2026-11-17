@@ -208,6 +208,15 @@ class TestPartieSuivante(unittest.TestCase):
                       (suite["id"], self.code))["ref_path"]
         self.assertEqual(apres, ref)
 
+    def test_planches_deja_dans_le_chat_restent_dans_le_chat(self):
+        """Secret Pets : les planches vivent dans le chat ChatGPT, pas en fichier.
+        La partie suivante utilise ce même chat : elle ne doit pas les croire absentes."""
+        db.exec1("UPDATE projets SET refs_dans_chat=1 WHERE id=?", (self.pid,))
+        db.exec1("UPDATE personnages SET ref_path=NULL WHERE projet_id=?", (self.pid,))
+        p2 = services.projet(services.creer_partie_suivante(self.pid)["id"])
+        self.assertEqual(p2["refs_dans_chat"], 1)
+        self.assertEqual(p2["chatgpt_chat_url"], "https://chatgpt.com/c/aaa")
+
     def test_deux_clics_ne_font_pas_deux_parties_2(self):
         a = services.creer_partie_suivante(self.pid)
         b = services.creer_partie_suivante(self.pid)
@@ -350,6 +359,15 @@ class TestSerieCommenceeAvant(unittest.TestCase):
         self.assertEqual(p["chatgpt_chat_url"], "https://chatgpt.com/c/abc-123")
         self.assertEqual(p["grok_episode"], 3)
         self.assertTrue(runner.planches_dans_le_chat(pid))
+
+    def test_planches_du_chat_pas_comptees_a_faire(self):
+        from videroo import runner
+        pid = services.creer_projet("Secret Pets 3", None, "", "https://chatgpt.com/c/abc-123", True, 3)
+        services.appliquer_pack(pid, services.analyser_pack(tests.pack_variantes()))
+        db.exec1("UPDATE personnages SET prompt_planche='', ref_path=NULL WHERE projet_id=?", (pid,))
+        self.assertEqual(runner.etat_production(pid)["restants"]["planche"], 0)
+        db.exec1("UPDATE projets SET refs_dans_chat=0 WHERE id=?", (pid,))
+        self.assertGreater(runner.etat_production(pid)["restants"]["planche"], 0)
 
     def test_sans_chat_chatgpt_les_planches_restent_exigees(self):
         from videroo import runner

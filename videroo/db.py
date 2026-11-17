@@ -240,6 +240,9 @@ COLONNES_SUPPLEMENTAIRES: dict[str, dict[str, str]] = {
         # Vide = mes comptes, ceux de la rotation. Sinon le compte appartient a
         # quelqu'un d'autre (ex. « Laura ») : il ne sert qu'a ses projets.
         "proprietaire": "TEXT",
+        # Quand le fournisseur a DIT quand le quota revient (« dans 1 heure ») :
+        # l'heure de retour. Prime sur l'horaire hebdomadaire et le délai global.
+        "quota_retour_le": "TEXT",
     },
     "projets": {
         "type_histoire": "TEXT NOT NULL DEFAULT 'fruits'",
@@ -256,6 +259,9 @@ COLONNES_SUPPLEMENTAIRES: dict[str, dict[str, str]] = {
         # de les joindre aux images (Grok, lui, reçoit toujours de vrais fichiers).
         "refs_dans_chat": "INTEGER DEFAULT 0",   # projet de la partie precedente d'une serie
         "etiquettes_inconnues": "TEXT",   # lecteur_souple : étiquettes à apprendre
+        # 1 = la chaîne attend un quota dont l'heure de retour est connue et
+        # proche : elle a le droit de repartir seule. Jamais posé autrement.
+        "attend_quota": "INTEGER DEFAULT 0",
     },
 }
 

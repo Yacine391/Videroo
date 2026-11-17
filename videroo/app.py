@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1437,8 +1438,19 @@ def _lancer_la_chaine(projet_id: int, mode: str) -> dict:
 
 @app.post("/local/projets/{projet_id}/action")
 async def api_action(projet_id: int, request: Request):
-    """Les boutons de l'atelier. Chaque action reste explicite et nommée."""
+    """Les boutons de l'atelier. Chaque action reste explicite et nommée.
+
+    Le travail tourne dans un fil à part : « Arrêter » ferme les navigateurs
+    (jusqu'à 20 s) et « Récupérer » lit une conversation (des minutes). Faits
+    ici même, ils gelaient TOUT le serveur — plus de suivi, plus de réponse
+    aux clics : le 16 novembre 2026, « Arrêter » semblait ne rien faire, et
+    onze clics impatients se sont exécutés d'un coup à la fin.
+    """
     corps = await request.json()
+    return await run_in_threadpool(_executer_action, projet_id, corps)
+
+
+def _executer_action(projet_id: int, corps: dict) -> dict:
     action = (corps.get("action") or "").strip()
     mode = corps.get("mode") or reglages.lire("mode_defaut")
     genre = corps.get("genre") or ""

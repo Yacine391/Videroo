@@ -15,6 +15,7 @@ import hashlib
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import comptes, config, db, fichiers, media, reglages
@@ -291,6 +292,40 @@ def _prompt_de(projet_id: int, cible_type: str, cible_id: int) -> str:
 
 
 
+def marqueurs_chatgpt(projet_id: int, cible_type: str, cible_id: int) -> tuple[str, list[str]]:
+    """Une ligne du prompt de cet élément que NUL autre prompt du projet ne contient.
+
+    Elle sert à retrouver NOTRE message dans la conversation ChatGPT, que
+    toutes les scènes (et les parties précédentes) partagent. Les prompts d'un
+    même épisode commencent par le même bloc commun : la première ligne ne
+    distingue rien, il faut une ligne propre à la scène. On rend aussi les
+    marqueurs des autres éléments : le premier qui suit le nôtre borne sa réponse.
+    """
+    def lignes(texte: str) -> list[str]:
+        return [" ".join(l.split())[:160] for l in (texte or "").splitlines()
+                if len(" ".join(l.split())) >= 20]
+
+    prompts: dict[tuple[str, int], str] = {}
+    for p in db.q("SELECT id FROM personnages WHERE projet_id=?", (projet_id,)):
+        prompts[("planche", p["id"])] = _prompt_de(projet_id, "planche", p["id"])
+    for sc in db.q("SELECT id FROM scenes WHERE projet_id=?", (projet_id,)):
+        prompts[("image", sc["id"])] = _prompt_de(projet_id, "image", sc["id"])
+    prompts[("miniature", 0)] = _prompt_de(projet_id, "miniature", 0)
+
+    plats = {cle: " ".join(texte.split()) for cle, texte in prompts.items()}
+
+    def propre_a(cle: tuple[str, int]) -> str:
+        for ligne in lignes(prompts.get(cle, "")):
+            if not any(ligne in autre for c, autre in plats.items() if c != cle):
+                return ligne
+        return ""
+
+    moi = (cible_type, cible_id if cible_type != "miniature" else 0)
+    mien = propre_a(moi)
+    autres = [m for m in (propre_a(c) for c in prompts if c != moi) if m]
+    return mien, autres
+
+
 def prompt_miniature(projet_id: int) -> str:
     """Le prompt de miniature : celui du projet s'il existe, sinon le modèle.
 
@@ -457,9 +492,29 @@ def medias_deja_rattaches(
     ):
         retenir("image", s["id"], s["image_path"], f"l'image de la scène {s['numero']}")
         retenir("video", s["id"], s["video_path"], f"la vidéo de la scène {s['numero']}")
-    pr = db.q1("SELECT miniature_path FROM projets WHERE id=?", (projet_id,))
+    pr = db.q1("SELECT miniature_path, chatgpt_chat_url FROM projets WHERE id=?",
+               (projet_id,))
     if pr is not None:
         retenir("miniature", 0, pr["miniature_path"], "la miniature")
+
+    # Les parties d'une série partagent la MÊME conversation ChatGPT : ses
+    # images d'avant (scènes, planches, miniature) y sont toujours. Le 16
+    # novembre 2026, « Récupérer » a rattaché à la scène 1 de la partie 4 la
+    # miniature de la partie 3 — le contrôle ne regardait que la partie 4.
+    if pr is not None and pr["chatgpt_chat_url"]:
+        for autre in db.q(
+            "SELECT id, nom, miniature_path FROM projets WHERE chatgpt_chat_url=?"
+            " AND id<>?",
+            (pr["chatgpt_chat_url"], projet_id),
+        ):
+            de = f"du projet #{autre['id']} « {autre['nom']} »"
+            for p in db.q("SELECT code, surnom, ref_path FROM personnages WHERE projet_id=?",
+                          (autre["id"],)):
+                retenir("", -1, p["ref_path"], f"la planche {p['code']} {p['surnom']} {de}")
+            for s in db.q("SELECT numero, image_path FROM scenes WHERE projet_id=?",
+                          (autre["id"],)):
+                retenir("", -1, s["image_path"], f"l'image de la scène {s['numero']} {de}")
+            retenir("", -1, autre["miniature_path"], f"la miniature {de}")
     return connus
 
 
@@ -547,14 +602,7 @@ def recuperer_resultat(
     """
     if cible_type not in ("image", "video", "planche", "miniature"):
         raise GenerationRefusee(f"Type inconnu : {cible_type}.")
-    occupe = tache_active()
-    if occupe is not None:
-        raise GenerationRefusee(
-            "Une génération est en cours : attends qu'elle finisse avant d'aller "
-            "chercher un résultat, sinon les deux se disputeraient le navigateur."
-        )
 
-    cible = chemin_attendu(projet_id, cible_type, cible_id)
     fournisseur = "grok" if cible_type == "video" else "chatgpt"
     precedente = db.q1(
         "SELECT * FROM taches WHERE projet_id=? AND cible_type=? AND cible_id=?"
@@ -563,6 +611,19 @@ def recuperer_resultat(
     )
     if precedente is not None:
         fournisseur = precedente["fournisseur"] or fournisseur
+
+    # Chaque fournisseur a SON navigateur : une image ChatGPT en cours
+    # n'empêche pas d'aller lire une vidéo chez Grok. Seule une génération du
+    # MÊME fournisseur se disputerait la page.
+    occupe = tache_active(fournisseur)
+    if occupe is not None:
+        raise GenerationRefusee(
+            f"Une génération {fournisseur} est en cours ({occupe['libelle']}) : "
+            "attends qu'elle finisse avant d'aller chercher un résultat chez "
+            f"{fournisseur}, sinon les deux se disputeraient sa page."
+        )
+
+    cible = chemin_attendu(projet_id, cible_type, cible_id)
 
     outil = adaptateur(fournisseur, "auto")
     if outil is None:
@@ -588,6 +649,19 @@ def recuperer_resultat(
     )
     resultat = nav.session(fournisseur).executer(outil.recuperer, ctx)
 
+    if resultat.etat == base.QUOTA:
+        # Le fournisseur avait REFUSÉ ce prompt : la preuve est dans sa réponse.
+        # Il n'y a donc rien à récupérer, et l'élément n'est plus « à vérifier » :
+        # il repartira (une première fois, pas une relance) quand un compte
+        # aura du quota. L'heure du compte n'est pas touchée ici : on ne sait
+        # pas de quand date ce refus.
+        if precedente is not None and precedente["statut"] in ("a_verifier", "echec"):
+            db.exec1(
+                "UPDATE taches SET statut='quota', message=?, fini_le=? WHERE id=?",
+                (resultat.message, db.maintenant(), precedente["id"]),
+            )
+        db.journaliser(f"Récupération : {resultat.message}", projet_id, "alerte")
+        return {"ok": False, "message": resultat.message, "etat": base.QUOTA}
     if resultat.etat != base.TERMINE:
         db.journaliser(
             f"Récupération sans résultat : {resultat.message}", projet_id, "alerte"
@@ -779,6 +853,7 @@ FAIT = "fait"            # le fichier est la, il n'y a plus rien a faire
 A_FAIRE = "a_faire"      # la chaine peut le lancer elle-meme, maintenant
 ATTENTE = "attente"      # rien a decider : ca arrive, ou c'est deja en cours
 BLOQUE = "bloque"        # il faut TA decision : la chaine s'arrete dessus
+QUOTA_ATTENDU = "quota"  # refusé faute de quota : repartira quand un compte revient
 
 
 def etat_cible(projet_id: int, cible_type: str, cible_id: int) -> tuple[str, str]:
@@ -814,6 +889,15 @@ def etat_cible(projet_id: int, cible_type: str, cible_id: int) -> tuple[str, str
                     "fournisseur : seule une régénération explicite de ta part peut "
                     "produire cet élément, et elle coûtera un crédit."
                 ))
+            if not _a_envoye(t):
+                # Rien n'est parti (connexion demandée, navigateur indisponible…) :
+                # parler de « résultat à récupérer » enverrait chercher une image
+                # qui ne peut pas exister.
+                return (BLOQUE, (
+                    f"la tâche #{t['id']} s'est arrêtée AVANT tout envoi — "
+                    f"{(t['message'] or '').strip()} Rien n'a été payé : règle ce "
+                    "point, puis clique « Réessayer »."
+                ))
             return (BLOQUE, (
                 f"la tâche #{t['id']} est « à vérifier » : une génération est peut-être "
                 "allée au bout chez le fournisseur. Clique « Récupérer le résultat » — "
@@ -826,9 +910,15 @@ def etat_cible(projet_id: int, cible_type: str, cible_id: int) -> tuple[str, str
             ))
         if t["statut"] == "echec":
             if _a_envoye(t):
+                # Le message de la tâche dit CE qui s'est passé (un refus net
+                # du fournisseur n'a rien coûté) : le bandeau ne doit pas le
+                # remplacer par une supposition générique.
+                detail = (t["message"] or "").strip()
                 return (BLOQUE, (
-                    f"la tâche #{t['id']} a échoué APRÈS avoir envoyé le prompt : le "
-                    "quota a pu partir. Une relance doit venir de toi."
+                    f"la tâche #{t['id']} a échoué après l'envoi du prompt"
+                    + (f" — {detail}" if detail else ".")
+                    + " Le prompt étant parti, du quota a pu être pris (sauf refus net "
+                    "du fournisseur, dit ci-dessus) : une relance doit venir de toi."
                 ))
             if t["origine"] == "auto":
                 rates_a_blanc += 1
@@ -840,12 +930,37 @@ def etat_cible(projet_id: int, cible_type: str, cible_id: int) -> tuple[str, str
             "Répare ce que dit le message d'échec, puis clique « Réessayer »."
         ))
 
+    # Dernière tentative refusée faute de quota : rien n'existe, rien n'a été
+    # payé. Tant qu'aucun compte du projet n'est revenu, on attend ; dès qu'il y
+    # en a un, l'élément est simplement « à faire ».
+    if taches and taches[-1]["statut"] == "quota":
+        fournisseur = taches[-1]["fournisseur"]
+        pool = _projet(projet_id)["comptes_de"]
+        if _refus_quota_d_affilee(taches) >= REFUS_QUOTA_MAX:
+            return (BLOQUE, (
+                f"{fournisseur} a refusé cet élément {REFUS_QUOTA_MAX} fois de suite "
+                "faute de quota : la chaîne n'insiste plus toute seule. Rien n'a été "
+                "payé. Clique « Réessayer » quand le quota est vraiment revenu."
+            ))
+        if fournisseur in comptes.SITES and comptes.compte_actif(fournisseur, pool) is None:
+            return (QUOTA_ATTENDU, (
+                f"limite atteinte chez {fournisseur}, rien n'a été payé. "
+                f"{phrase_retour(fournisseur, pool)}"
+            ))
+
+    if cible_type == "image":
+        en_route = _planche_en_route(projet_id, cible_id)
+        if en_route is not None:
+            return en_route
+
     if cible_type == "video":
         image = _media_de(projet_id, "image", cible_id)
         if not fichiers.fichier_utilisable(image):
             etat_image, motif = etat_cible(projet_id, "image", cible_id)
             if etat_image == BLOQUE:
                 return (BLOQUE, f"son image de départ est bloquée : {motif}")
+            if etat_image == QUOTA_ATTENDU:
+                return (QUOTA_ATTENDU, f"son image de départ attend le quota : {motif}")
             return (ATTENTE, "son image de départ n'est pas encore là.")
 
     try:
@@ -853,6 +968,35 @@ def etat_cible(projet_id: int, cible_type: str, cible_id: int) -> tuple[str, str
     except (GenerationRefusee, fichiers.MelangeDeProjets) as exc:
         return (BLOQUE, str(exc))
     return (A_FAIRE, "")
+
+
+def _planche_en_route(projet_id: int, scene_id: int) -> tuple[str, str] | None:
+    """L'image d'une scène dont une planche manque ENCORE, mais que la chaîne produit.
+
+    « Références réellement absentes » est une décision à prendre quand le pack
+    ne livre pas la planche. Quand la planche a son prompt, elle est simplement
+    dans la file (ou elle attend le quota) : ce n'est pas un blocage, et le dire
+    comme tel affichait « la chaîne attend ta décision » à chaque démarrage.
+    """
+    scene = db.q1("SELECT refs_codes FROM scenes WHERE id=? AND projet_id=?",
+                  (scene_id, projet_id))
+    if not scene:
+        return None
+    for code in db.charger_json(scene["refs_codes"], []):
+        p = db.q1("SELECT * FROM personnages WHERE projet_id=? AND code=?", (projet_id, code))
+        if not p or fichiers.fichier_utilisable(p["ref_path"]):
+            continue
+        if not (p["prompt_planche"] or "").strip():
+            continue  # le pack ne la livre pas : c'est aux contrôles de le dire
+        etat, motif = etat_cible(projet_id, "planche", p["id"])
+        nom = f"{p['code']} {p['surnom']}".strip()
+        if etat == BLOQUE:
+            return (BLOQUE, f"sa planche {nom} est bloquée : {motif}")
+        if etat == QUOTA_ATTENDU:
+            return (QUOTA_ATTENDU, f"sa planche {nom} attend le quota : {motif}")
+        if etat in (ATTENTE, A_FAIRE):
+            return (ATTENTE, f"sa planche {nom} n'est pas encore là.")
+    return None
 
 
 def _elements_dans_l_ordre(projet_id: int) -> list[tuple[str, int, str]]:
@@ -927,7 +1071,12 @@ def etat_production(projet_id: int) -> dict:
     """Ce qui reste à faire, affichable sans rien lancer."""
     projet = _projet(projet_id)
     restants = {"planche": 0, "image": 0, "video": 0}
+    dans_le_chat = planches_dans_le_chat(projet_id)
     for p in db.q("SELECT * FROM personnages WHERE projet_id=?", (projet_id,)):
+        # Même règle que _refs_manquantes : une planche déjà dans le chat
+        # ChatGPT, que ce pack ne fait pas refaire, n'est pas « à faire ».
+        if dans_le_chat and not (p["prompt_planche"] or "").strip():
+            continue
         if not fichiers.fichier_utilisable(p["ref_path"]):
             restants["planche"] += 1
     for sc in db.q("SELECT * FROM scenes WHERE projet_id=?", (projet_id,)):
@@ -941,6 +1090,7 @@ def etat_production(projet_id: int) -> dict:
     etapes: dict[str, dict] = {}
     suivante = None
     blocages: list[dict] = []
+    attentes: list[dict] = []
     for fournisseur in FOURNISSEURS:
         etape = prochaine_etape(projet_id, fournisseur)
         ligne = {
@@ -956,8 +1106,14 @@ def etat_production(projet_id: int) -> dict:
             suivante = ligne
         if etape["etat"] == BLOQUE:
             blocages.append(ligne)
+        elif etape["etat"] == QUOTA_ATTENDU:
+            attentes.append(ligne)
 
     return {
+        "attentes_quota": attentes,
+        "reprise_auto": bool(
+            projet["pipeline"] and attentes and retour_proche(projet_id) is not None
+        ),
         "active": bool(projet["pipeline"]),
         "mode": projet["pipeline_mode"] or db.reglage("mode_defaut", "assiste"),
         "suivante": suivante,
@@ -993,6 +1149,8 @@ def planifier(projet_id: int) -> list[int]:
     mode = projet["pipeline_mode"] or reglages.lire("mode_defaut")
     lancees: list[int] = []
     reste = False
+    quota_lointain: list[str] = []
+    attend = False
     for fournisseur in FOURNISSEURS:
         if not _fournisseur_libre(fournisseur):
             reste = True
@@ -1009,6 +1167,16 @@ def planifier(projet_id: int) -> list[int]:
                 projet_id,
                 "alerte",
             )
+            continue
+        if etape["etat"] == QUOTA_ATTENDU:
+            # On n'attend tout seul que si l'heure de retour est SUE et proche.
+            # Sinon la chaîne s'arrête : elle ne doit pas repartir d'elle-même
+            # dans trois jours, quand tu n'y penses plus.
+            if retour_proche(projet_id) is not None:
+                reste = True
+                attend = True
+            else:
+                quota_lointain.append(fournisseur)
             continue
         if etape["etat"] == ATTENTE:
             reste = True
@@ -1029,12 +1197,30 @@ def planifier(projet_id: int) -> list[int]:
                 f"Étape {fournisseur} non lancée : {exc}", projet_id, "alerte"
             )
 
+    _poser_attente_quota(projet_id, attend)
     if not reste and not lancees:
         db.exec1("UPDATE projets SET pipeline=0 WHERE id=?", (projet_id,))
-        db.journaliser(
-            "Chaîne de production terminée : plus rien à générer automatiquement.",
-            projet_id,
-        )
+        if quota_lointain:
+            a_court = [
+                f for f in FOURNISSEURS
+                if f in comptes.SITES and comptes.a_des_comptes(f, projet["comptes_de"])
+                and comptes.compte_actif(f, projet["comptes_de"]) is None
+            ]
+            db.journaliser(
+                "Chaîne arrêtée faute de quota : "
+                + " ".join(
+                    f"{f} — {phrase_retour(f, projet['comptes_de'])}" for f in a_court
+                )
+                + " Clique « Lancer la génération » à ce moment-là : rien n'a été "
+                "payé, la chaîne reprendra où elle s'est arrêtée.",
+                projet_id,
+                "alerte",
+            )
+        else:
+            db.journaliser(
+                "Chaîne de production terminée : plus rien à générer automatiquement.",
+                projet_id,
+            )
     return lancees
 
 
@@ -1044,13 +1230,20 @@ def phrase_des_blocages(etat: dict) -> str:
     « Rien a produire » est vrai mais trompeur quand la chaine est en fait
     parquee sur une scene qui attend ta decision : il faut nommer la scene.
     """
-    blocages = etat.get("blocages") or []
-    if not blocages:
-        return ""
-    return " ".join(
+    phrases = [
         f"Arrêtée sur « {b['libelle']} » ({b['fournisseur']}) : {b['motif']}"
-        for b in blocages
+        for b in etat.get("blocages") or []
+    ]
+    suite = (
+        " La chaîne repartira seule à ce moment-là."
+        if etat.get("reprise_auto")
+        else " Relance la chaîne à ce moment-là."
     )
+    phrases += [
+        f"« {a['libelle']} » ({a['fournisseur']}) attend le quota : {a['motif']}{suite}"
+        for a in etat.get("attentes_quota") or []
+    ]
+    return " ".join(phrases)
 
 
 def demarrer_production(projet_id: int, mode: str) -> dict:
@@ -1087,7 +1280,7 @@ def demarrer_production(projet_id: int, mode: str) -> dict:
 
 
 def arreter_production(projet_id: int) -> None:
-    db.exec1("UPDATE projets SET pipeline=0 WHERE id=?", (projet_id,))
+    db.exec1("UPDATE projets SET pipeline=0, attend_quota=0 WHERE id=?", (projet_id,))
     db.journaliser(
         "Chaîne de production arrêtée. Les résultats obtenus sont conservés.", projet_id
     )
@@ -1160,6 +1353,7 @@ class Worker(threading.Thread):
         self.fournisseur = fournisseur
         self._arret = threading.Event()
         self.intervalle = intervalle
+        self._prochain_reveil = 0.0
 
     def stop(self) -> None:
         self._arret.set()
@@ -1169,6 +1363,10 @@ class Worker(threading.Thread):
             try:
                 tache = self.prochaine(self.fournisseur)
                 if tache is None:
+                    if time.monotonic() >= self._prochain_reveil:
+                        self._prochain_reveil = time.monotonic() + 30
+                        if tache_active(self.fournisseur) is None:
+                            reveiller_apres_quota(self.fournisseur)
                     self._arret.wait(self.intervalle)
                     continue
                 self.executer(tache["id"])
@@ -1250,15 +1448,21 @@ class Worker(threading.Thread):
 
         deja_essayes: set[int] = set()
         envoye = False  # vrai des qu'un prompt est reellement parti, tout compte fait
+        dit = ""        # ce que le fournisseur a dit en refusant, mot pour mot
+        pool = _projet(projet_id)["comptes_de"]
         while True:
             ctx = construire_contexte(t, cible)
-            if ctx.compte_id and ctx.compte_id in deja_essayes:
-                resultat = base.ResultatGeneration(
-                    base.INTERVENTION,
-                    f"Tous les comptes {t['fournisseur']} disponibles ont été essayés.",
-                    instruction="Réarme un compte dans Admin, attends la remise à zéro "
-                    "des quotas, ou ajoute un abonnement.",
-                )
+            # Aucun compte de CE projet n'a de quota : on ne part pas. Sans ce
+            # refus, la tâche partait sur le profil « principal » — le compte de
+            # quelqu'un d'autre (une série de Laura sur le Grok de Yacine).
+            sans_compte = (
+                t["mode"] != "demo"  # une simulation ne touche aucun compte
+                and t["fournisseur"] in comptes.SITES
+                and not ctx.compte_id
+                and comptes.a_des_comptes(t["fournisseur"], pool)
+            )
+            if sans_compte or (ctx.compte_id and ctx.compte_id in deja_essayes):
+                resultat = _resultat_quota(t["fournisseur"], pool, dit)
                 break
             if ctx.compte_id:
                 deja_essayes.add(ctx.compte_id)
@@ -1285,9 +1489,7 @@ class Worker(threading.Thread):
                         # Quota annonce APRES l'envoi : on bascule le compte
                         # pour la suite, mais on ne relance rien ici.
                         comptes.marquer_quota_epuise(ctx.compte_id, resultat.message)
-                        suite = comptes.compte_actif(
-                            t["fournisseur"], _projet(t["projet_id"])["comptes_de"]
-                        )
+                        suite = comptes.compte_actif(t["fournisseur"], pool)
                         db.journaliser(
                             f"Compte « {ctx.compte_libelle} » mis de côté : "
                             + (f"la suite partira sur « {suite['libelle']} ». "
@@ -1296,23 +1498,24 @@ class Worker(threading.Thread):
                             t["projet_id"], "alerte", t["id"],
                         )
                 break
-            # Quota atteint sans rien envoyer : basculer ne coûte rien.
-            comptes.marquer_quota_epuise(ctx.compte_id, resultat.message)
-            secours = comptes.comptes_de_secours(
-                t["fournisseur"], ctx.compte_id, _projet(t["projet_id"])["comptes_de"]
+            # QUOTA = le fournisseur n'a RIEN produit : il l'a dit en réponse à
+            # notre prompt (« vous avez atteint la limite… »), ou tu as déclaré
+            # le compte à court. Il n'y a rien à récupérer et rien n'a été payé :
+            # basculer sur un autre compte est la première génération, pas une
+            # relance. Le compte est mis de côté jusqu'à l'heure qu'il annonce.
+            dit = resultat.message
+            if ctx.compte_id:
+                comptes.marquer_quota_epuise(ctx.compte_id, resultat.message)
+            secours = (
+                comptes.comptes_de_secours(t["fournisseur"], ctx.compte_id, pool)
+                if ctx.compte_id else []
             )
             if not secours:
-                resultat = base.ResultatGeneration(
-                    base.INTERVENTION,
-                    f"Quota atteint sur tous tes comptes {t['fournisseur']}. "
-                    "Rien n'a été envoyé.",
-                    instruction="Attends la remise à zéro, réarme un compte dans Admin, "
-                    "ou ajoute un abonnement.",
-                )
+                resultat = _resultat_quota(t["fournisseur"], pool, dit)
                 break
             db.journaliser(
                 f"Bascule automatique vers le compte « {secours[0]['libelle']} » : "
-                "la génération n'avait pas encore été envoyée, rien n'est perdu.",
+                "rien n'a été produit sur le précédent, rien n'est perdu.",
                 projet_id,
                 "alerte",
                 tache_id,
@@ -1321,6 +1524,8 @@ class Worker(threading.Thread):
         statut = enregistrer_resultat(tache_id, resultat, cible, envoye=envoye)
         if statut == base.TERMINE:
             planifier(projet_id)
+        elif statut == base.QUOTA:
+            _apres_quota(projet_id, t)
         elif statut == base.ECHEC and not envoye:
             # Rien n'est parti, rien n'a ete depense : la chaine reprend sur le
             # MEME element plutot que de le sauter. Elle s'arretera d'elle-meme
@@ -1343,6 +1548,138 @@ class Worker(threading.Thread):
                 "alerte",
             )
         return statut
+
+
+# --------------------------------------------------------------------------
+# Quota : dire vrai, attendre le retour annoncé, repartir sans rien payer deux fois
+# --------------------------------------------------------------------------
+
+#: Au-delà, la chaîne n'attend pas toute seule : elle s'arrête et tu relances.
+ATTENTE_QUOTA_MAX = timedelta(hours=3)
+#: Refus d'affilée sur le même élément avant que la chaîne cesse d'insister.
+REFUS_QUOTA_MAX = 4
+
+
+def _refus_quota_d_affilee(taches: list[sqlite3.Row]) -> int:
+    """Combien de fois de suite, en dernier, cet élément a été refusé faute de quota."""
+    compte = 0
+    for ancienne in reversed(taches):
+        if ancienne["statut"] != "quota":
+            break
+        compte += 1
+    return compte
+
+
+def phrase_retour(fournisseur: str, pool: str | None) -> str:
+    """Quand un compte de ce pool revient — sans rien inventer."""
+    retour, source, libelle = comptes.prochain_retour(fournisseur, pool)
+    if retour is None:
+        return "Aucune heure de retour n'est connue."
+    quand = comptes.quand_lisible(retour)
+    if source == "annonce":
+        return f"Retour annoncé par le fournisseur {quand} (compte « {libelle} »)."
+    if source == "horaire":
+        return f"Recharge de « {libelle} » réglée par toi : {quand}."
+    return (
+        "Le fournisseur ne dit pas quand le quota revient ; d'après ton délai "
+        f"global, « {libelle} » sera réessayé {quand}."
+    )
+
+
+def _resultat_quota(fournisseur: str, pool: str | None, dit: str) -> base.ResultatGeneration:
+    """Plus aucun compte de ce projet n'a de quota : l'état « quota », dit tel quel."""
+    debut = dit.strip() or (
+        f"Aucun compte {fournisseur} de ce projet n'a de quota disponible : rien "
+        "n'a été envoyé."
+    )
+    return base.ResultatGeneration(
+        base.QUOTA,
+        f"{debut} Il n'y a rien à récupérer et rien n'a été payé. "
+        f"{phrase_retour(fournisseur, pool)}",
+    )
+
+
+def quota_attendu_sous_peu(fournisseur: str, pool: str | None) -> datetime | None:
+    """L'heure de retour, si elle est SUE (annoncée ou réglée) et assez proche."""
+    retour, source, _ = comptes.prochain_retour(fournisseur, pool)
+    if retour is None or source not in ("annonce", "horaire"):
+        return None
+    return retour if retour - datetime.now() <= ATTENTE_QUOTA_MAX else None
+
+
+def retour_proche(projet_id: int) -> datetime | None:
+    """L'heure où TOUS les fournisseurs à court de ce projet seront revenus.
+
+    None si l'un d'eux n'a pas d'heure de retour sue et proche : la chaîne ne
+    doit alors pas attendre toute seule.
+    """
+    pool = _projet(projet_id)["comptes_de"]
+    heures: list[datetime] = []
+    for fournisseur in FOURNISSEURS:
+        if fournisseur not in comptes.SITES or not comptes.a_des_comptes(fournisseur, pool):
+            continue
+        if comptes.compte_actif(fournisseur, pool) is not None:
+            continue
+        retour = quota_attendu_sous_peu(fournisseur, pool)
+        if retour is None:
+            return None
+        heures.append(retour)
+    return max(heures) if heures else None
+
+
+def _poser_attente_quota(projet_id: int, attend: bool) -> None:
+    db.exec1("UPDATE projets SET attend_quota=? WHERE id=?", (1 if attend else 0, projet_id))
+
+
+def _apres_quota(projet_id: int, t: sqlite3.Row) -> None:
+    """La chaîne attend le retour annoncé, ou s'arrête en disant quand revenir."""
+    projet = _projet(projet_id)
+    if not projet["pipeline"]:
+        return
+    refus = _refus_quota_d_affilee(
+        taches_cible(projet_id, t["cible_type"], t["cible_id"])
+    )
+    retour = retour_proche(projet_id)
+    if retour is not None and refus < REFUS_QUOTA_MAX:
+        _poser_attente_quota(projet_id, True)
+        db.journaliser(
+            f"Chaîne {t['fournisseur']} en attente du quota : elle repartira seule sur "
+            f"« {t['libelle']} » {comptes.quand_lisible(retour)}. Rien n'a été payé, "
+            "rien ne sera payé deux fois. « Arrêter » annule cette attente.",
+            projet_id,
+            "alerte",
+        )
+        return
+    # planifier décide : l'autre fournisseur continue s'il a du travail, sinon
+    # la chaîne s'arrête en disant quand revenir.
+    planifier(projet_id)
+
+
+def reveiller_apres_quota(fournisseur: str) -> list[int]:
+    """Relance les chaînes qui attendaient un quota maintenant revenu.
+
+    Appelé par le worker quand il n'a rien à faire. Ne touche QUE les chaînes
+    en marche (tu ne les as pas arrêtées) dont le prochain élément a été refusé
+    faute de quota : rien d'autre ne repart jamais tout seul.
+    """
+    relancees: list[int] = []
+    for p in db.q(
+        "SELECT id FROM projets WHERE pipeline=1 AND attend_quota=1 AND archive=0"
+        " AND statut NOT IN ('pause','arrete')"
+    ):
+        etape = prochaine_etape(p["id"], fournisseur)
+        if etape["etat"] != A_FAIRE or not etape["cible"]:
+            continue
+        cible_type, cible_id, _ = etape["cible"]
+        passees = taches_cible(p["id"], cible_type, cible_id)
+        if not passees or passees[-1]["statut"] != "quota":
+            continue
+        db.journaliser(
+            f"Quota {fournisseur} revenu : la chaîne reprend sur « {etape['libelle']} ».",
+            p["id"],
+        )
+        relancees.extend(planifier(p["id"]))
+    return relancees
 
 
 def construire_contexte(t: sqlite3.Row, cible: Path) -> base.ContexteTache:
@@ -1397,6 +1734,10 @@ def construire_contexte(t: sqlite3.Row, cible: Path) -> base.ContexteTache:
         extras["connues"] = medias_deja_rattaches(
             t["projet_id"], (t["cible_type"], t["cible_id"])
         )
+        if t["cible_type"] != "video":
+            extras["marqueur"], extras["autres_marqueurs"] = marqueurs_chatgpt(
+                t["projet_id"], t["cible_type"], t["cible_id"]
+            )
     origine = t["origine"] if "origine" in t.keys() else "manuel"
     extras["origine"] = origine or "manuel"
 

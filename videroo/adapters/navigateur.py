@@ -19,6 +19,7 @@ import re
 import signal
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
@@ -788,6 +789,177 @@ def preuve(page, selecteurs: list[str], timeout: int = 1500) -> str:
     except Exception:
         extrait = ""
     return f"« {trouve} » → « {extrait} »" if extrait else f"« {trouve} »"
+
+
+_JS_APRES_MESSAGE = r"""([marqueur, bornes, selecteurs, prompt]) => {
+    const plat = s => (s || '').replace(/\s+/g, ' ').trim();
+    const m = plat(marqueur);
+    if (!m) return null;
+    // Si ChatGPT rendait un jour notre prompt en plusieurs morceaux, ceux qui
+    // suivent le marqueur ne sont pas « la réponse » : on les reconnaît à ce
+    // qu'ils figurent mot pour mot dans le prompt envoyé.
+    const notrePrompt = plat(prompt);
+    const deNous = t => notrePrompt && t.length >= 12 && notrePrompt.includes(t);
+    const hors = n => {
+        const e = n.nodeType === 1 ? n : n.parentElement;
+        return !e || !!e.closest('script, style, noscript, textarea, [contenteditable="true"], form');
+    };
+    // Tous les morceaux de texte de la page, dans l'ordre, hors zone de saisie.
+    const marcheur = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const noeuds = [];
+    for (let n = marcheur.nextNode(); n; n = marcheur.nextNode()) {
+        if (!hors(n) && n.nodeValue.trim()) noeuds.push(n);
+    }
+    // Notre message : le DERNIER morceau qui porte le marqueur. S'il est coupé
+    // entre plusieurs morceaux, on retombe sur le plus petit bloc qui le contient.
+    let iMessage = -1;
+    let occurrences = 0;
+    for (let i = noeuds.length - 1; i >= 0; i--) {
+        if (plat(noeuds[i].nodeValue).includes(m)) {
+            occurrences += 1;
+            if (iMessage < 0) iMessage = i;
+        }
+    }
+    let ancre = iMessage >= 0 ? noeuds[iMessage] : null;
+    if (!ancre) {
+        const debut = m.slice(0, 24);
+        const blocs = [...document.querySelectorAll('body *')].filter(e =>
+            !hors(e) && e.textContent.length < 60000 && e.textContent.includes(debut)
+            && plat(e.textContent).includes(m)
+            && ![...e.children].some(c => plat(c.textContent).includes(m)));
+        if (!blocs.length) return null;
+        occurrences = blocs.length;
+        ancre = blocs[blocs.length - 1];
+        for (let i = noeuds.length - 1; i >= 0; i--) {
+            if (ancre.contains(noeuds[i])) { iMessage = i; break; }
+        }
+    }
+    const apres = n => !!(ancre.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && !ancre.contains(n);
+    // La borne : le premier message d'une AUTRE scène envoyé après le nôtre.
+    const autres = (bornes || []).map(plat).filter(b => b && b !== m);
+    let borne = null, iBorne = noeuds.length;
+    for (let i = iMessage + 1; i < noeuds.length && autres.length; i++) {
+        const t = plat(noeuds[i].nodeValue);
+        if (apres(noeuds[i]) && autres.some(b => t.includes(b))) { borne = noeuds[i]; iBorne = i; break; }
+    }
+    const avantBorne = n => !borne
+        || !!(borne.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING);
+    const texte = noeuds.slice(iMessage + 1, iBorne).filter(apres)
+        .map(n => plat(n.nodeValue)).filter(t => !deNous(t)).join('\n');
+    let images = [];
+    for (const selecteur of (selecteurs || [])) {
+        let elements = [];
+        try { elements = [...document.querySelectorAll(selecteur)]; } catch (e) { continue; }
+        if (!elements.length) continue;
+        images = elements.filter(e => apres(e) && avantBorne(e))
+            .map(e => e.getAttribute('src')).filter(Boolean);
+        break;  // même règle que la lecture des images : le premier sélecteur qui voit
+    }
+    return {texte: texte, images: [...new Set(images)], borne: !!borne, occurrences: occurrences};
+}"""
+
+
+def apres_notre_message(
+    page, marqueur: str, bornes: list[str] | None = None,
+    selecteurs_images: list[str] | None = None, prompt: str = "",
+) -> dict | None:
+    """Ce qui suit NOTRE message dans la conversation : texte et images.
+
+    Une conversation garde tout : les réponses d'hier, les images des scènes
+    d'avant, un vieux « vous avez atteint la limite ». Chercher dans la page
+    entière, c'est lire tout ça comme si c'était la réponse du jour — le 16
+    novembre 2026, « Récupérer » a ainsi rattaché à une scène la miniature de
+    la partie précédente, et un mot du prompt a passé pour une limite d'usage.
+    Seul ce qui vient APRÈS notre message, et avant le message de la scène
+    suivante (`bornes`), est la réponse à notre demande.
+
+    Rend None si le message est introuvable (conversation tronquée, marqueur
+    vide) : l'appelant doit alors dire qu'il ne sait pas, pas deviner.
+    Le texte garde un morceau de page par ligne ; `occurrences` dit combien de
+    fois le marqueur est affiché (un même prompt renvoyé y figure plusieurs fois).
+    """
+    if not (marqueur or "").strip():
+        return None
+    # Les sélecteurs Playwright (text=…, :has-text) ne valent pas en CSS pur.
+    css = [s for s in (selecteurs_images or []) if "text=" not in s and ":has-text" not in s]
+    try:
+        return page.evaluate(_JS_APRES_MESSAGE, [marqueur, list(bornes or []), css, prompt or ""])
+    except Exception:
+        return None
+
+
+def sans_notre_message(texte: str, message: str) -> str:
+    """`texte` privé des lignes de NOTRE message (celles d'au moins 12 caractères).
+
+    Le texte lu « après le début de notre message » contient encore la suite de
+    notre propre prompt : une réplique comme « réessayez plus tard » y passerait
+    pour un refus du fournisseur. Les retours à la ligne sont gardés : ils
+    séparent les morceaux de la page, et la citation d'un refus s'y arrête.
+    """
+    les_notres = {
+        " ".join(l.split()) for l in (message or "").splitlines() if len(" ".join(l.split())) >= 12
+    }
+    garde: list[str] = []
+    for ligne in (texte or "").splitlines():
+        propre = " ".join(ligne.split())
+        for notre in les_notres:
+            if notre in propre:
+                propre = propre.replace(notre, " ")
+        propre = " ".join(propre.split())
+        if propre:
+            garde.append(propre)
+    return "\n".join(garde)
+
+
+def aplatir(texte: str) -> tuple[str, list[int]]:
+    """Minuscules sans accents (’ devient '), et l'indice d'origine de chaque caractère.
+
+    Les motifs de refus s'écrivent sans accents ; la citation, elle, doit
+    reprendre le texte exact du fournisseur : l'index fait le lien.
+    """
+    plat: list[str] = []
+    index: list[int] = []
+    for i, c in enumerate(texte or ""):
+        for d in unicodedata.normalize("NFD", c.lower()):
+            if unicodedata.category(d) == "Mn":
+                continue
+            plat.append("'" if d in "’‘" else d)
+            index.append(i)
+    return "".join(plat), index
+
+
+def citer_refus(texte: str, motifs: list[str], longueur_max: int = 260) -> str:
+    """La phrase du fournisseur, telle qu'il l'a écrite, qui contient le premier
+    motif trouvé (motifs sans accents, en minuscules), ou "" si aucun."""
+    plat, index = aplatir(texte)
+    for motif in motifs or []:
+        trouve = re.search(motif, plat)
+        if not trouve:
+            continue
+        ici = index[trouve.start()]
+        # De la phrase qui contient le motif jusqu'à la fin de son morceau de
+        # page : ni le « ChatGPT a dit : » d'avant, ni le pied de page d'après.
+        point = max(texte.rfind(fin, 0, ici) for fin in (". ", "! ", "? ", "\n"))
+        debut = point + 1 if point >= 0 else 0
+        if ici - debut > longueur_max:
+            debut = ici
+        fin = texte.find("\n", ici)
+        fin = min(fin if fin >= 0 else len(texte), debut + longueur_max)
+        return " ".join(texte[debut:fin].split())
+    return ""
+
+
+def phrase_autour(texte: str, motif: str, longueur_max: int = 260) -> str:
+    """La phrase du fournisseur qui contient `motif` (regex), citée telle quelle."""
+    trouve = re.search(motif, texte, re.IGNORECASE)
+    if not trouve:
+        return ""
+    point = texte.rfind(". ", 0, trouve.start())
+    debut = point + 2 if point >= 0 else 0
+    if trouve.start() - debut > longueur_max:
+        debut = trouve.start()
+    return texte[debut:debut + longueur_max].strip()
 
 
 def premiere_ligne(exc: Exception) -> str:

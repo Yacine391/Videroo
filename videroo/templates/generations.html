@@ -297,11 +297,11 @@ l'automatisation du site fonctionne. Le lot et la production complète attendron
   <td>{{ t.libelle }}</td>
   <td class="mono">{{ t.fournisseur }}/{{ t.mode }}</td>
   <td><span class="etiquette {{ 'info' if t.origine=='auto' else 'neutre' }}">{{ t.origine }}</span></td>
-  <td><span class="etiquette {{ 'ok' if t.statut=='termine' else ('attente' if t.statut in ('en_attente','en_cours','a_verifier') else ('neutre' if t.statut=='annule' else 'ko')) }}">{{ t.statut.replace('_',' ') }}</span></td>
+  <td><span class="etiquette {{ 'ok' if t.statut=='termine' else ('attente' if t.statut in ('en_attente','en_cours','a_verifier','quota') else ('neutre' if t.statut=='annule' else 'ko')) }}">{{ t.statut.replace('_',' ') }}</span></td>
   <td class="mono">{{ t.lance_le or '—' }}<br>{{ t.fini_le or '' }}</td>
   <td style="max-width:420px">{{ t.message or '' }}</td>
   <td>
-    {% if t.statut in ('a_verifier','echec','annule') %}
+    {% if t.statut in ('a_verifier','echec','annule','quota') %}
     <form method="post" action="/taches/{{ t.id }}/reessayer" onsubmit="return confirm('Réessayer cet élément ? C est une action explicite qui peut consommer un quota.');">
       <button class="petit" type="submit">Réessayer</button></form>
     {% endif %}

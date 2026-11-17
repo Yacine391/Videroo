@@ -70,13 +70,16 @@ def creer_projet(
 
 
 #: Ce qu'une partie reprend de la precedente pour rester la meme histoire :
-#  les deux conversations (memes visages, meme style), les regles deja posees
-#  dans le chat Grok (pour ne pas les renvoyer) et le format de sortie.
+#  les deux conversations (memes visages, meme style), le fait que les
+#  planches sont deja dans ce chat ChatGPT (refs_dans_chat : sans lui, une
+#  serie dont les planches ne vivent que dans le chat se croit sans
+#  references et bloque des la scene 1), les regles deja posees dans le
+#  chat Grok (pour ne pas les renvoyer) et le format de sortie.
 #  L'annonce de serie n'en fait PAS partie : la premiere scene de la partie
 #  N+1 doit dire « "<serie>" - Partie N+1 : » dans ce meme chat.
 HERITAGE_SERIE = (
-    "type_histoire", "grok_serie", "chatgpt_chat_url", "grok_chat_url",
-    "grok_regles_installees", "grok_profil_regles", "comptes_de",
+    "type_histoire", "grok_serie", "chatgpt_chat_url", "refs_dans_chat",
+    "grok_chat_url", "grok_regles_installees", "grok_profil_regles", "comptes_de",
     "duree_cible_min",
     "duree_cible_max", "vitesse", "export_largeur", "export_hauteur",
 )
@@ -844,7 +847,7 @@ def importer_media(
         db.exec1("UPDATE scenes SET video_origine='importe' WHERE id=?", (cible_id,))
 
     for t in runner.taches_cible(projet_id, cible_type, cible_id):
-        if t["statut"] in ("en_attente", "a_verifier", "echec"):
+        if t["statut"] in ("en_attente", "a_verifier", "echec", "quota"):
             db.exec1(
                 "UPDATE taches SET statut='termine', fini_le=?, resultat_path=?,"
                 " message=? WHERE id=?",
@@ -1611,11 +1614,13 @@ def _etat_element(
             "message": "",
             "tache_id": derniere["id"] if derniere else 0,
         }
-    if derniere is not None and derniere["statut"] in ("a_verifier", "echec"):
+    if derniere is not None and derniere["statut"] in ("a_verifier", "echec", "quota"):
         return {
             "etat": derniere["statut"],
             "message": derniere["message"] or "",
             "tache_id": derniere["id"],
+            # « Récupérer » n'a de sens que si un prompt est vraiment parti.
+            "envoye": bool(derniere["envoye"]) and derniere["statut"] != "quota",
         }
     try:
         runner.controles_avant_lancement(projet_id, genre, cible_id)

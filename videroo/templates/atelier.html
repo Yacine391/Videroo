@@ -170,11 +170,13 @@ const PROJET = {{ p.id }};
 function mode() { return document.getElementById('mode').value; }
 const LIBELLE_ETAT = {
   termine: 'terminé', en_cours: 'en cours', en_attente: 'en file',
-  a_verifier: 'à vérifier', echec: 'échec', bloque: 'à toi de jouer', a_faire: 'à faire'
+  a_verifier: 'à vérifier', echec: 'échec', bloque: 'à toi de jouer', a_faire: 'à faire',
+  quota: 'limite atteinte'
 };
 const COULEUR_ETAT = {
   termine: 'ok', en_cours: 'info', en_attente: 'info',
-  a_verifier: 'attente', echec: 'ko', bloque: 'attente', a_faire: 'neutre'
+  a_verifier: 'attente', echec: 'ko', bloque: 'attente', a_faire: 'neutre',
+  quota: 'attente'
 };
 let suivre = true;
 let cleActive = null;
@@ -203,13 +205,22 @@ const rangs = new Map();
 function boutons(e) {
   if (e.etat === 'en_cours' || e.etat === 'en_attente') return '';
   if (e.etat === 'a_faire') return '<button type="button" data-act="generer">Générer</button>';
+  if (e.etat === 'quota') {
+    // Le fournisseur a refusé faute de quota : rien n'existe chez lui, il n'y
+    // a rien à récupérer. La chaîne repartira d'elle-même au retour du quota ;
+    // ce bouton sert seulement à ne pas attendre.
+    return '<button type="button" class="doux" data-act="reessayer" data-quota="1" data-tache="'
+         + e.tache_id + '">Réessayer maintenant</button>';
+  }
   if (e.etat === 'a_verifier' || e.etat === 'echec') {
+    const reessayer = '<button type="button" class="doux" data-act="reessayer" data-tache="'
+         + e.tache_id + '"' + (e.envoye === false ? ' data-quota="1"' : '') + '>Réessayer</button>';
+    // Rien n'est parti : il n'y a rien à aller lire chez le fournisseur.
+    if (e.envoye === false) return reessayer;
     // « Récupérer » d'abord, et en premier à l'écran : il va LIRE chez le
     // fournisseur un résultat peut-être déjà produit, sans rien envoyer.
     // « Réessayer » renvoie un prompt et peut payer deux fois la même image.
-    return '<button type="button" data-act="recuperer">Récupérer le résultat</button>'
-         + ' <button type="button" class="doux" data-act="reessayer" data-tache="'
-         + e.tache_id + '">Réessayer</button>';
+    return '<button type="button" data-act="recuperer">Récupérer le résultat</button> ' + reessayer;
   }
   if (e.etat === 'termine') {
     let html = '';
@@ -351,7 +362,10 @@ function peindreTuyau(fil) {
 function peindre(e) {
   const carte = document.querySelector('[data-cle="' + e.cle + '"]');
   if (!carte) return;
-  if (carte.dataset.etat !== e.etat) {
+  // Les boutons dépendent aussi de la tâche et de « un prompt est-il parti ».
+  const signature = e.etat + '|' + (e.tache_id || 0) + '|' + (e.envoye === false ? 0 : 1);
+  if (carte.dataset.signature !== signature) {
+    carte.dataset.signature = signature;
     carte.dataset.etat = e.etat;
     const badge = carte.querySelector('.etat');
     badge.textContent = LIBELLE_ETAT[e.etat] || e.etat;
@@ -400,6 +414,13 @@ function peindreTout(fil) {
     titre.textContent = 'Chaîne arrêtée — elle attend ta décision';
     detail.textContent = fil.production.blocages
       .map(b => b.libelle + ' : ' + b.motif).join(' — ');
+  } else if ((fil.production.attentes_quota || []).length) {
+    point.className = fil.production.reprise_auto ? 'point attente' : 'point';
+    titre.textContent = fil.production.reprise_auto
+      ? 'En attente du quota — la chaîne repartira seule'
+      : 'Limite atteinte — relance la chaîne au retour du quota';
+    detail.textContent = fil.production.attentes_quota
+      .map(a => a.libelle + ' : ' + a.motif).join(' — ');
   } else {
     point.className = 'point fini';
     titre.textContent = 'Rien en attente';
@@ -540,10 +561,18 @@ document.addEventListener('click', ev => {
   const carte = bouton.closest('.bloc');
   const act = bouton.dataset.act;
   if (act === 'regenerer' && !confirm("Regénérer cet élément ? C'est une nouvelle génération, donc du quota consommé. L'ancien fichier est conservé à côté.")) return;
-  if (act === 'reessayer' && !confirm("Réessayer cet élément ? Un réessai renvoie un prompt et peut consommer du quota. Essaie d'abord « Récupérer le résultat » : il va lire chez le fournisseur sans rien envoyer.")) return;
+  if (act === 'reessayer' && bouton.dataset.quota
+      && !confirm("Renvoyer ce prompt maintenant ? Rien n'avait été produit, donc rien ne sera payé deux fois. Si la limite n'est pas levée, le fournisseur refusera encore.")) return;
+  if (act === 'reessayer' && !bouton.dataset.quota
+      && !confirm("Réessayer cet élément ? Un réessai renvoie un prompt et peut consommer du quota. Essaie d'abord « Récupérer le résultat » : il va lire chez le fournisseur sans rien envoyer.")) return;
   bouton.disabled = true;
   const cle = carte.dataset.cle;
-  const rang = act === 'recuperer' ? (rangs.get(cle) || 0) + 1 : 1;
+  // On ne remonte d'un cran que sur « Pas la bonne — celle d'avant », c'est-à-dire
+  // depuis une carte déjà récupérée. Un simple second clic sur « Récupérer le
+  // résultat » relit la dernière image : avant, il demandait « la 2ᵉ en partant
+  // de la fin » sans que tu l'aies voulu.
+  const remonter = act === 'recuperer' && carte.dataset.etat === 'termine';
+  const rang = remonter ? (rangs.get(cle) || 1) + 1 : 1;
   if (act === 'recuperer') rangs.set(cle, rang);
   agir({
     action: act,
@@ -561,7 +590,16 @@ document.getElementById('btn-lancer').addEventListener('click', ev => {
   document.getElementById('btn-suivre').hidden = true;
   agir({ action: 'lancer' });
 });
-document.getElementById('btn-arreter').addEventListener('click', () => agir({ action: 'arreter' }));
+document.getElementById('btn-arreter').addEventListener('click', ev => {
+  // Fermer les navigateurs prend quelques secondes : le bouton le dit, et un
+  // second clic n'empile pas un second arrêt.
+  const bouton = ev.currentTarget;
+  if (bouton.disabled) return;
+  bouton.disabled = true;
+  const libelle = bouton.textContent;
+  bouton.textContent = 'Arrêt en cours…';
+  agir({ action: 'arreter' }).finally(() => { bouton.disabled = false; bouton.textContent = libelle; });
+});
 document.getElementById('btn-suivre').addEventListener('click', () => {
   suivre = true;
   document.getElementById('btn-suivre').hidden = true;

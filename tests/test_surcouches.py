@@ -290,6 +290,28 @@ class TestQuotaVerifiable(unittest.TestCase):
             )
 
 
+class TestQuotaChatGPTPasDansTonPrompt(unittest.TestCase):
+    """16 novembre 2026 : « text=limite » a trouvé le mot dans le prompt de la
+    scène affiché dans la conversation. Attente coupée, image 2 refusée,
+    compte mis de côté — alors que ChatGPT n'avait rien limité."""
+
+    PROMPT = ("Plan vertical 9:16. Sa méfiance envers Nesrine est celle d’une amie "
+              "qui constate deux limites franchies. Tous les visages restent fidèles.")
+
+    def test_aucun_signe_ne_se_declenche_sur_un_prompt(self):
+        for signe in selecteurs.charger()["chatgpt"]["signes_quota"]:
+            phrase = signe.removeprefix("text=").lower()
+            self.assertGreater(len(phrase.split()), 1, f"« {signe} » : un mot seul")
+            self.assertNotIn(phrase, self.PROMPT.lower(), f"« {signe} » dans le prompt")
+
+    def test_la_vraie_limite_reste_reconnue(self):
+        avis = "vous avez atteint la limite de génération d'images. réessayez plus tard"
+        self.assertTrue(any(
+            s.removeprefix("text=").lower() in avis
+            for s in selecteurs.charger()["chatgpt"]["signes_quota"]
+        ))
+
+
 class TestChatDedieDuCompte(unittest.TestCase):
     """Chez Grok, seule la conversation du projet « Video » sait animer."""
 

@@ -66,7 +66,9 @@ Chrome. Pour utiliser plusieurs abonnements, repasse en « Profil dédié ».</d
     {% if c.quota_dispo %}<span class="etiquette ok">disponible</span>
     {% else %}<span class="etiquette ko">épuisé</span>
       <div class="mono">depuis {{ c.quota_epuise_le }}</div>
-      {% if c.prochaine_recharge %}<div class="mono">recharge {{ c.prochaine_recharge }}</div>{% endif %}
+      {% if c.retour_source == 'annonce' %}<div class="mono">retour annoncé par le fournisseur {{ c.retour_lisible }}</div>
+      {% elif c.prochaine_recharge %}<div class="mono">recharge {{ c.prochaine_recharge }}</div>
+      {% elif c.retour_source == 'estimation' %}<div class="mono">heure de retour inconnue (réessai {{ c.retour_lisible }}, d'après ton délai global)</div>{% endif %}
       <form method="post" action="/admin/comptes/{{ c.id }}/rearmer">
         <button class="doux petit" type="submit">Réarmer</button></form>
     {% endif %}

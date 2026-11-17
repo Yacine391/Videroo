@@ -177,18 +177,11 @@ class AdaptateurGrok(base.Adaptateur):
                 url=url,
             )
 
-        # Quota atteint ? On le voit AVANT d'envoyer : la bascule est alors gratuite.
-        vu = navigateur.preuve(page, sel.get("signes_quota", []), timeout=2000)
-        if vu:
-            return base.ResultatGeneration(
-                base.QUOTA,
-                f"Grok signale une limite d'usage sur « {ctx.compte_libelle} » : "
-                f"{vu}. Rien n'a été envoyé.",
-                instruction="Si ce texte n'a rien à voir avec un quota, c'est une "
-                "fausse alerte : réarme le compte dans Admin > Mes comptes et "
-                "corrige « signes_quota » dans Admin > Sélecteurs.",
-                url=page.url,
-            )
+        # Aucune lecture de « limite » dans la page avant l'envoi : le chat dédié
+        # garde pour toujours ses vieilles cartes « limite atteinte ». Lues ici,
+        # elles bloqueraient le compte à vie une fois ses crédits revenus. C'est
+        # l'état du compte qui décide si on part ; un refus de Grok se lit dans
+        # SA réponse à notre message, et ne coûte rien.
 
         if chat_dedie and not meme_conversation(chat_dedie, page.url):
             return base.ResultatGeneration(
@@ -418,6 +411,9 @@ class AdaptateurGrok(base.Adaptateur):
                 f"{ctx.extras.get('scene_numero')} »."
             )
         texte = message_scene(ctx, premiere, reprise)
+        # Même garde que chez ChatGPT : une scène renvoyée répète la même 1re
+        # ligne. Un refus n'est lu que sous un exemplaire NOUVEAU de ce message.
+        ctx.extras["occurrences_avant"] = self._occurrences(page, texte.split("\n", 1)[0])
         ailleurs = self._chat_change(page, adresse_de_depart)
         if ailleurs:
             return ailleurs
@@ -461,6 +457,7 @@ class AdaptateurGrok(base.Adaptateur):
         # Point de non-retour : le quota video peut avoir ete depense.
         ctx.envoye = True
         ctx.extras["envoye_le"] = db.maintenant()
+        ctx.extras["message_envoye"] = texte
         db.definir_reglage(cle_chat, serie_ici)
         ctx.journaliser(f"Prompt vidéo envoyé à Grok ({comment}).")
         if premiere:
@@ -545,22 +542,8 @@ class AdaptateurGrok(base.Adaptateur):
             return base.ResultatGeneration(
                 base.QUOTA,
                 f"{ctx.extras.get('refus')} Aucune vidéo n'a été produite sur "
-                f"« {ctx.compte_libelle} » : la scène part sur le compte suivant.",
+                f"« {ctx.compte_libelle} ».",
                 url=page.url,
-            )
-        if attente == "quota":
-            # Le prompt est deja parti : on ne sait pas si un credit a ete pris.
-            # On met donc le compte de cote (la suite partira toute seule sur le
-            # compte suivant) mais on ne relance RIEN sur cet element.
-            return base.ResultatGeneration(
-                base.A_VERIFIER,
-                "Grok annonce la fin de ton quota sur ce compte, après l'envoi. "
-                "Aucune vidéo n'est apparue et l'application ne relance RIEN ici.",
-                instruction="Le compte est mis de côté : la prochaine génération "
-                "partira sur le compte suivant. Si la vidéo finit par sortir, "
-                "clique « Récupérer le résultat ».",
-                url=page.url,
-                compte_a_court=True,
             )
         if attente != "video":
             return base.ResultatGeneration(
@@ -583,6 +566,18 @@ class AdaptateurGrok(base.Adaptateur):
 
     ATTENTE_FIN_DE_TRAVAIL = 360
 
+    @staticmethod
+    def _occurrences(page, marqueur: str) -> int:
+        """Combien de fois cette ligne est affichée dans la conversation."""
+        if not (marqueur or "").strip():
+            return 0
+        try:
+            return int(page.evaluate(
+                "(m) => (document.body.innerText || '').split(m).length - 1", marqueur.strip()
+            ))
+        except Exception:
+            return 0
+
     def _texte_apres_notre_message(self, page, marqueur: str) -> str | None:
         try:
             return page.evaluate(
@@ -603,18 +598,27 @@ class AdaptateurGrok(base.Adaptateur):
         dans la réponse prime toujours sur tout refus.
         """
         import re as _re
-        import unicodedata as _ud
 
+        avant = ctx.extras.get("occurrences_avant") if ctx is not None else None
+        if avant is not None and self._occurrences(page, marqueur) <= avant:
+            return ""  # notre message n'est pas encore affiché
         if self._videos_de_la_reponse(page, marqueur):
             return ""
         apres = self._texte_apres_notre_message(page, marqueur)
+        if apres and ctx is not None:
+            # Ce qui suit la 1re ligne de notre message contient encore la SUITE
+            # de ce message : une réplique de la scène n'est pas un refus.
+            apres = navigateur.sans_notre_message(apres, ctx.extras.get("message_envoye", ""))
         if apres:
-            plat = "".join(
-                c for c in _ud.normalize("NFD", apres.lower()) if _ud.category(c) != "Mn"
-            )
-            for motif in sel.get("refus_quota", []):
-                if _re.search(motif, plat):
-                    return f"Grok a refusé dans sa réponse (« {motif} » : limite atteinte)."
+            # Les motifs de refus, puis les anciens signes « page entière » —
+            # qui ne valent plus que dans la réponse à NOTRE message.
+            motifs = list(sel.get("refus_quota", [])) + [
+                _re.escape(navigateur.aplatir(signe.removeprefix("text="))[0])
+                for signe in sel.get("signes_quota", []) if signe.removeprefix("text=")
+            ]
+            cite = navigateur.citer_refus(apres, motifs)
+            if cite:
+                return f"Grok a refusé dans sa réponse : « {cite} »."
         if ctx is not None and ctx.compte_id:
             ligne = db.q1("SELECT quota_epuise_le FROM comptes_ia WHERE id=?", (ctx.compte_id,))
             declare = ligne and ligne["quota_epuise_le"] and (
@@ -1029,11 +1033,6 @@ class AdaptateurGrok(base.Adaptateur):
                     return "refus"
             if time.time() >= prochain_controle:
                 prochain_controle = time.time() + 10
-                # La vidéo prime : un signe de quota n'est retenu que si rien
-                # n'est apparu, sinon on jetterait un résultat déjà payé.
-                if navigateur.preuve(page, sel.get("signes_quota", []), timeout=800):
-                    if not (self._sources_videos(page, sel) - avant):
-                        return "quota"
             time.sleep(1.5)
         return "rien"
 

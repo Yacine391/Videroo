@@ -60,11 +60,37 @@ DEFAUT: dict = {
             "button:has-text('Se connecter')",
             "button:has-text('Log in')",
         ],
+        # Des phrases entières, jamais un mot seul : « text=limite » tombait sur
+        # TON prompt affiché dans la conversation (16 novembre 2026, Le mariage
+        # forcé partie 4 : « … Tous … limite … »). L'attente de l'image 1 a été
+        # coupée, l'image 2 refusée, et le compte Jules mis de côté à tort.
         "signes_quota": [
-            "text=limite",
+            "text=atteint la limite",
+            "text=atteint votre limite",
+            "text=limite d'utilisation",
             "text=limit reached",
-            "text=réessayez plus tard",
+            "text=reached your limit",
             "text=You've reached",
+            "text=réessayez plus tard",
+            "text=try again later",
+        ],
+        # Refus écrit par ChatGPT dans SA réponse à notre message (texte mis en
+        # minuscules, sans accents). Relevé le 16 novembre 2026 : « Vous avez
+        # atteint la limite de demandes de génération d'images de l'offre Plus.
+        # Vous pourrez créer d'autres images après la réinitialisation de la
+        # limite, dans 1 heure. »
+        "refus_quota": [
+            r"atteint (la|votre|ta) limite",
+            r"limite de (demandes|generation|creation)",
+            r"reinitialisation de la limite",
+            r"(reached|hit) (your|the) .{0,40}limit",
+            r"limit (resets|will reset)",
+            r"image (generation|creation) limit",
+            # Relevé le 17 novembre 2026 sur la même conversation : « Vous avez
+            # épuisé votre quota d… » — une autre formulation du même refus.
+            r"epuise (votre|ton|ta|vos) (quota|limite|credits?)",
+            r"quota d'(images|utilisation|generation)",
+            r"(used up|run out of|exhausted) (your|the) .{0,40}(quota|limit|credits)",
         ],
     },
     "grok": {

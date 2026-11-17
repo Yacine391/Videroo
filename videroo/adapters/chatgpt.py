@@ -42,22 +42,29 @@ class AdaptateurChatGPT(base.Adaptateur):
                 "déjà ouvert, puis clique sur Reprendre.",
                 url=url,
             )
-        vu = navigateur.preuve(page, sel.get("signes_quota", []), timeout=1200)
-        if vu:
-            return base.ResultatGeneration(
-                base.QUOTA,
-                f"ChatGPT signale une limite d'usage sur « {ctx.compte_libelle} » : "
-                f"{vu}. Rien n'a été envoyé.",
-                instruction="Attends la fin de ta limite, ou ajoute un autre compte "
-                "ChatGPT dans Admin.",
-                url=url,
-            )
+        # Aucune lecture de « limite » dans la page avant l'envoi : la
+        # conversation garde ses vieux refus pour toujours, et tes prompts
+        # peuvent contenir le mot. Une limite passée bloquerait donc ce chat à
+        # vie. C'est l'état du compte (heure de retour annoncée) qui décide si
+        # on part ; et si ChatGPT refuse, il le dit dans SA réponse à notre
+        # message — lue plus bas, sans rien coûter.
+        marqueur = (ctx.extras.get("marqueur") or "").strip()
+        bornes = list(ctx.extras.get("autres_marqueurs") or [])
 
         avant = self._images_stables(page, sel, ctx)
         # Tout de suite, pendant que ces adresses blob: valent encore quelque
         # chose : joindre un fichier et envoyer le prompt font re-rendre la
         # galerie, et une adresse périmée ne se lit plus.
         deja_vues = self._empreintes(page, avant)
+        # Combien de fois ce prompt est DÉJÀ affiché (un renvoi de la même scène
+        # le répète). Un refus ne compte que sous un exemplaire NOUVEAU : juste
+        # après l'envoi, tant que notre message n'est pas encore affiché, ce qui
+        # suit l'ancien exemplaire est la réponse d'hier (« dans 41 minutes »),
+        # pas celle d'aujourd'hui.
+        minimum = 0
+        if marqueur:
+            deja = navigateur.apres_notre_message(page, marqueur, bornes, None, ctx.prompt)
+            minimum = (deja or {}).get("occurrences", 0) + 1
         # Les médias déjà rangés dans le projet ne sont jamais le résultat : ils
         # s'ajoutent au repère. Sans repère lisible on ne le fabrique pas avec
         # eux, pour que le refus « empreintes illisibles » reste possible.
@@ -159,7 +166,7 @@ class AdaptateurChatGPT(base.Adaptateur):
             "c'est la suivante qui sera récupérée."
         )
         nouvelle, souci = self._attendre_image(
-            page, sel, avant, delai, repere
+            page, sel, avant, delai, repere, marqueur, bornes, ctx.prompt, minimum
         )
         if nouvelle is None and not souci and self._repond_encore(page, sel):
             # Une image lente n'est pas une image perdue : tant que ChatGPT montre
@@ -170,9 +177,19 @@ class AdaptateurChatGPT(base.Adaptateur):
                 f"{delai} s, rien n'est renvoyé."
             )
             nouvelle, souci = self._attendre_image(
-                page, sel, avant, delai, repere
+                page, sel, avant, delai, repere, marqueur, bornes, ctx.prompt, minimum
             )
         chrono("fin de l'attente de l'image")
+        if nouvelle is None and souci.startswith(self.REFUS):
+            # ChatGPT a répondu par un refus (limite d'images) : rien n'a été
+            # produit, il n'y a rien à récupérer. QUOTA met le compte de côté
+            # jusqu'à l'heure qu'il annonce, et bascule s'il y a un autre compte.
+            return base.ResultatGeneration(
+                base.QUOTA,
+                f"ChatGPT a refusé la demande sur « {ctx.compte_libelle} » : "
+                f"{souci[len(self.REFUS):]} Aucune image n'a été produite.",
+                url=page.url,
+            )
         if nouvelle is None:
             if not souci and self._repond_encore(page, sel):
                 minutes = (time.monotonic() - depart) / 60
@@ -273,6 +290,50 @@ class AdaptateurChatGPT(base.Adaptateur):
                 url=page.url,
             )
         presentes = self._images_stables(page, sel, ctx)
+
+        # La conversation sert à plusieurs scènes, à plusieurs parties, à la
+        # miniature. « La dernière image » n'est donc celle de cette scène que
+        # si elle vient APRÈS notre prompt. Le 16 novembre 2026, ChatGPT avait
+        # refusé (limite d'images) : la dernière image était la miniature de la
+        # partie 3, et c'est elle qui a été rattachée à la scène 1 de la partie 4.
+        marqueur = (ctx.extras.get("marqueur") or "").strip()
+        ancree = ""
+        if marqueur:
+            reponse = navigateur.apres_notre_message(
+                page, marqueur, list(ctx.extras.get("autres_marqueurs") or []),
+                sel.get("images_reponse", []), ctx.prompt,
+            )
+            if reponse is None:
+                return base.ResultatGeneration(
+                    base.A_VERIFIER,
+                    "Le prompt de cet élément est introuvable dans la conversation "
+                    "ChatGPT affichée : je ne prends aucune image au hasard. Rien n'a "
+                    "été envoyé, rien n'a été rattaché.",
+                    instruction="Si l'image existe, enregistre-la depuis ChatGPT et "
+                    "dépose-la sur la case. Sinon clique « Réessayer » pour renvoyer "
+                    "le prompt une fois.",
+                    url=page.url,
+                )
+            dans_la_reponse = [s for s in presentes if s in set(reponse.get("images") or [])]
+            if not dans_la_reponse:
+                refus = self._refus_dans(reponse.get("texte") or "", sel)
+                if refus:
+                    return base.ResultatGeneration(
+                        base.QUOTA,
+                        f"ChatGPT a répondu à ce prompt par un refus : {refus} Aucune "
+                        "image n'a été produite : il n'y a rien à récupérer.",
+                        url=page.url,
+                    )
+                return base.ResultatGeneration(
+                    base.A_VERIFIER,
+                    "Ton prompt est bien dans la conversation, mais ChatGPT n'a "
+                    "produit aucune image en réponse. Rien n'a été pris — surtout pas "
+                    "une image d'une autre scène.",
+                    instruction="Clique « Réessayer » pour renvoyer le prompt une fois.",
+                    url=page.url,
+                )
+            presentes = dans_la_reponse
+            ancree = " dans la réponse à ton prompt"
         if not presentes:
             return base.ResultatGeneration(
                 base.A_VERIFIER,
@@ -286,7 +347,7 @@ class AdaptateurChatGPT(base.Adaptateur):
         if rang > len(presentes):
             return base.ResultatGeneration(
                 base.A_VERIFIER,
-                f"Cette conversation ne contient que {len(presentes)} image(s) : "
+                f"Il n'y a que {len(presentes)} image(s){ancree or ' dans cette conversation'} : "
                 f"impossible de remonter à la {rang}ᵉ en partant de la fin.",
                 url=page.url,
             )
@@ -314,8 +375,9 @@ class AdaptateurChatGPT(base.Adaptateur):
         return base.ResultatGeneration(
             base.TERMINE,
             f"Image récupérée sans aucune génération ({taille // 1024} Ko) : la "
-            f"{position} des {len(presentes)} images de la conversation. Regarde-la : "
-            "rien ne garantit que ce soit celle de cette scène.",
+            f"{position} des {len(presentes)} image(s)"
+            + (f"{ancree}." if ancree else " de la conversation. Regarde-la : rien ne "
+               "garantit que ce soit celle de cette scène."),
             chemin=str(ctx.chemin_sortie),
             url=page.url,
         )
@@ -397,9 +459,34 @@ class AdaptateurChatGPT(base.Adaptateur):
                 return trouvees
         return []
 
+    #: Préfixe du motif rendu par l'attente quand ChatGPT a refusé.
+    REFUS = "refus : "
+
+    @staticmethod
+    def _refus_dans(texte: str, sel) -> str:
+        """La phrase de refus de ChatGPT trouvée dans `texte`, citée telle quelle, ou ""."""
+        cite = navigateur.citer_refus(texte, sel.get("refus_quota", []))
+        return f"« {cite} »" if cite else ""
+
+    def _refus_dans_la_reponse(
+        self, page, sel, marqueur: str, bornes: list[str], prompt: str = "",
+        minimum: int = 0,
+    ) -> str:
+        """Refus écrit par ChatGPT APRÈS notre message, cité, ou "" (rien / inconnu).
+
+        `minimum` : notre message doit être affiché au moins autant de fois ;
+        sinon ce qu'on lirait suit un ENVOI PRÉCÉDENT du même prompt.
+        """
+        reponse = navigateur.apres_notre_message(page, marqueur, bornes, None, prompt)
+        if not reponse or reponse.get("occurrences", 0) < minimum:
+            return ""
+        return self._refus_dans(reponse.get("texte") or "", sel)
+
     def _attendre_image(
         self, page, sel, avant: list[str], delai: int,
         deja_vues: set[str] | None = None,
+        marqueur: str = "", bornes: list[str] | None = None, prompt: str = "",
+        minimum: int = 0,
     ) -> tuple[str | None, str]:
         """Attend une image dont le CONTENU est nouveau, et rend (adresse, motif).
 
@@ -447,10 +534,12 @@ class AdaptateurChatGPT(base.Adaptateur):
             trouvee, candidate = self._image_au_contenu_neuf(page, sel, deja_vues, candidate)
             if trouvee:
                 return trouvee, ""
-            if tour % 4 == 0:
-                vu = navigateur.preuve(page, sel.get("signes_quota", []), timeout=400)
-                if vu:
-                    return None, f"ChatGPT affiche une limite d'usage ({vu})"
+            if tour % 4 == 0 and marqueur:
+                refus = self._refus_dans_la_reponse(
+                    page, sel, marqueur, bornes or [], prompt, minimum
+                )
+                if refus:
+                    return None, self.REFUS + refus
             tour += 1
             time.sleep(1.2)
 

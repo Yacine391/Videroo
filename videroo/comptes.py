@@ -7,7 +7,9 @@ envoyé, pour ne jamais payer deux fois la même génération.
 """
 from __future__ import annotations
 
+import re
 import shutil
+import unicodedata
 from datetime import datetime, time, timedelta
 
 from . import adresses, config, db, fichiers, reglages
@@ -122,6 +124,101 @@ def definir_reinitialisation(
 
 
 # ---------------------------------------------------------------------------
+# Retour du quota : ce que le fournisseur annonce, sinon ton horaire, sinon rien
+# ---------------------------------------------------------------------------
+
+_NOMBRES = {"un": 1, "une": 1, "a": 1, "an": 1, "one": 1, "deux": 2, "two": 2,
+            "trois": 3, "three": 3, "quatre": 4, "four": 4}
+_RE_DELAI = re.compile(
+    r"\b(?:dans|in|after|apres)\s+(?:environ\s+|about\s+)?"
+    r"(\d+|un|une|a|an|one|deux|two|trois|three|quatre|four)\s*"
+    r"(heures?|hours?|hrs?|h|minutes?|mins?|min)\b"
+    r"(?:\s*(?:et|and)?\s*(\d+)\s*(minutes?|mins?|min)\b)?"
+)
+
+
+def _plat(texte: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", (texte or "").lower())
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+def delai_annonce(texte: str) -> timedelta | None:
+    """Le délai que le fournisseur annonce lui-même (« dans 1 heure »), ou None.
+
+    On ne devine rien : sans phrase de ce genre dans SON message, pas de délai.
+    """
+    trouve = _RE_DELAI.search(_plat(texte))
+    if not trouve:
+        return None
+    nombre = trouve.group(1)
+    quantite = int(nombre) if nombre.isdigit() else _NOMBRES[nombre]
+    delai = (
+        timedelta(hours=quantite) if trouve.group(2).startswith("h")
+        else timedelta(minutes=quantite)
+    )
+    if trouve.group(3):
+        delai += timedelta(minutes=int(trouve.group(3)))
+    return delai if timedelta(0) < delai <= timedelta(days=8) else None
+
+
+#: Marge après l'heure annoncée : « dans 1 heure » est arrondi par le fournisseur.
+MARGE_RETOUR = timedelta(minutes=3)
+
+
+def retour_prevu(ligne: dict) -> tuple[datetime | None, str]:
+    """Quand ce compte retrouve son quota, et d'où vient cette heure.
+
+    « annonce » : le fournisseur l'a écrit. « horaire » : ta recharge
+    hebdomadaire réglée dans Admin. « estimation » : seulement le délai global
+    des réglages — une supposition, à ne jamais présenter comme une annonce.
+    """
+    if not ligne.get("quota_epuise_le"):
+        return None, ""
+    annonce = ligne.get("quota_retour_le")
+    if annonce:
+        try:
+            return datetime.fromisoformat(annonce), "annonce"
+        except ValueError:
+            pass
+    recharge = prochaine_recharge(ligne)
+    if recharge is not None:
+        return recharge, "horaire"
+    try:
+        moment = datetime.fromisoformat(ligne["quota_epuise_le"])
+    except ValueError:
+        return None, ""
+    return moment + timedelta(hours=reglages.lire_float("quota_reset_heures")), "estimation"
+
+
+def quand_lisible(moment: datetime) -> str:
+    """« vers 00:41 », ou « mardi 17/11 vers 14:34 » si ce n'est pas aujourd'hui."""
+    if moment.date() == datetime.now().date():
+        return f"vers {moment.strftime('%H:%M')}"
+    return f"{JOURS[moment.weekday()]} {moment.strftime('%d/%m')} vers {moment.strftime('%H:%M')}"
+
+
+def prochain_retour(site: str, proprietaire: str | None = None) -> tuple[datetime | None, str, str]:
+    """Le premier compte de ce pool à revenir : (heure, source, libellé du compte)."""
+    meilleurs: list[tuple[datetime, str, str]] = []
+    for c in liste(site):
+        if not c["actif"] or c["quota_dispo"] or not _meme_proprietaire(c, proprietaire):
+            continue
+        moment, source = retour_prevu(c)
+        if moment is not None:
+            meilleurs.append((moment, source, c["libelle"]))
+    if not meilleurs:
+        return None, "", ""
+    return min(meilleurs, key=lambda m: m[0])
+
+
+def a_des_comptes(site: str, proprietaire: str | None = None) -> bool:
+    """Ce pool a-t-il au moins un compte actif, disponible ou non ?"""
+    return any(c["actif"] and _meme_proprietaire(c, proprietaire) for c in liste(site))
+
+
+# ---------------------------------------------------------------------------
 # Modèle
 # ---------------------------------------------------------------------------
 
@@ -227,6 +324,9 @@ def _enrichir(d: dict) -> dict:
         else ""
     )
     d["prochaine_recharge_iso"] = recharge.isoformat(timespec="minutes") if recharge else ""
+    retour, source = retour_prevu(d)
+    d["retour_source"] = source if (retour and not d["quota_dispo"]) else ""
+    d["retour_lisible"] = quand_lisible(retour) if d["retour_source"] else ""
     return d
 
 
@@ -242,6 +342,13 @@ def quota_disponible(ligne: dict) -> bool:
     epuise = ligne.get("quota_epuise_le")
     if not epuise:
         return True
+    annonce = ligne.get("quota_retour_le")
+    if annonce:
+        # Le fournisseur a dit quand revenir : c'est lui qui sait.
+        try:
+            return datetime.now() >= datetime.fromisoformat(annonce)
+        except ValueError:
+            pass
     recharge = prochaine_recharge(ligne)
     if recharge is not None:
         return datetime.now() >= recharge
@@ -444,12 +551,22 @@ def comptes_de_secours(site: str, sauf_id: int, proprietaire: str | None = None)
 
 def marquer_quota_epuise(compte_id: int, detail: str = "") -> dict:
     c = compte(compte_id)
+    delai = delai_annonce(detail)
+    retour = (
+        (datetime.now() + delai + MARGE_RETOUR).isoformat(timespec="seconds")
+        if delai else None
+    )
     db.exec1(
-        "UPDATE comptes_ia SET quota_epuise_le=? WHERE id=?",
-        (db.maintenant(), compte_id),
+        "UPDATE comptes_ia SET quota_epuise_le=?, quota_retour_le=? WHERE id=?",
+        (db.maintenant(), retour, compte_id),
     )
     apres = compte(compte_id)
-    if apres["prochaine_recharge"]:
+    if retour:
+        quand = (
+            f"{SITES[c['site']]['nom']} annonce son retour "
+            f"{quand_lisible(datetime.fromisoformat(retour))}"
+        )
+    elif apres["prochaine_recharge"]:
         quand = f"Recharge prévue {apres['prochaine_recharge']}"
     else:
         quand = (
@@ -466,7 +583,10 @@ def marquer_quota_epuise(compte_id: int, detail: str = "") -> dict:
 
 def rearmer(compte_id: int) -> dict:
     c = compte(compte_id)
-    db.exec1("UPDATE comptes_ia SET quota_epuise_le=NULL WHERE id=?", (compte_id,))
+    db.exec1(
+        "UPDATE comptes_ia SET quota_epuise_le=NULL, quota_retour_le=NULL WHERE id=?",
+        (compte_id,),
+    )
     db.journaliser(f"Compte « {c['libelle']} » réarmé : il repasse dans la rotation.")
     return compte(compte_id)
 
